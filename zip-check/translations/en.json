@@ -1,4 +1,4 @@
-﻿{
+{
   "app": {
     "name": "Instance Config Migrator",
     "short_description": "Export and import Zendesk configuration bundles.",
