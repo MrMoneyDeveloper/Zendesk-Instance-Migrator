@@ -1,0 +1,7 @@
+{
+  "app": {
+    "name": "Instance Config Migrator",
+    "short_description": "Export and import Zendesk configuration using migration bundles.",
+    "long_description": "A private admin tool for exporting configuration from one Zendesk instance and importing it into another through a dry-run and approval workflow."
+  }
+}
