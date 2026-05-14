@@ -1,0 +1,18 @@
+{
+  "name": "Instance Config Migrator",
+  "author": {
+    "name": "CX Experts",
+    "email": "support@example.com",
+    "url": "https://example.com"
+  },
+  "defaultLocale": "en",
+  "private": true,
+  "singleInstall": false,
+  "version": "3.0",
+  "frameworkVersion": "2.0",
+  "location": {
+    "support": {
+      "nav_bar": "assets/iframe.html"
+    }
+  }
+}

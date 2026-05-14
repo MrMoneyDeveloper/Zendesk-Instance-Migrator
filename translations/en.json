@@ -1,0 +1,7 @@
+{
+  "app": {
+    "name": "Instance Config Migrator",
+    "short_description": "Migrate Zendesk configuration and routing settings between instances",
+    "long_description": "Zendesk Support nav bar app that requires a local ephemeral runner on 127.0.0.1:8765. Flow: runner check, PIN approve, validate, dry-run, execute."
+  }
+}
