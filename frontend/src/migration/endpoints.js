@@ -1,0 +1,141 @@
+import { MigrationObjectType } from "./objectTypes";
+
+export const ENDPOINTS = Object.freeze({
+  [MigrationObjectType.GROUPS]: {
+    type: MigrationObjectType.GROUPS,
+    collectionKey: "groups",
+    wrapperKey: "group",
+    listPath: "/api/v2/groups.json",
+    createPath: "/api/v2/groups.json",
+    updatePath: (id) => `/api/v2/groups/${encodeURIComponent(id)}.json`,
+    idField: "id",
+  },
+  [MigrationObjectType.TICKET_FIELDS]: {
+    type: MigrationObjectType.TICKET_FIELDS,
+    collectionKey: "ticket_fields",
+    wrapperKey: "ticket_field",
+    listPath: "/api/v2/ticket_fields.json",
+    createPath: "/api/v2/ticket_fields.json",
+    updatePath: (id) => `/api/v2/ticket_fields/${encodeURIComponent(id)}.json`,
+    idField: "id",
+  },
+  [MigrationObjectType.TICKET_FORMS]: {
+    type: MigrationObjectType.TICKET_FORMS,
+    collectionKey: "ticket_forms",
+    wrapperKey: "ticket_form",
+    listPath: "/api/v2/ticket_forms.json",
+    createPath: "/api/v2/ticket_forms.json",
+    updatePath: (id) => `/api/v2/ticket_forms/${encodeURIComponent(id)}.json`,
+    idField: "id",
+  },
+  [MigrationObjectType.MACROS]: {
+    type: MigrationObjectType.MACROS,
+    collectionKey: "macros",
+    wrapperKey: "macro",
+    listPath: "/api/v2/macros.json",
+    createPath: "/api/v2/macros.json",
+    updatePath: (id) => `/api/v2/macros/${encodeURIComponent(id)}.json`,
+    idField: "id",
+  },
+  [MigrationObjectType.VIEWS]: {
+    type: MigrationObjectType.VIEWS,
+    collectionKey: "views",
+    wrapperKey: "view",
+    listPath: "/api/v2/views.json",
+    createPath: "/api/v2/views.json",
+    updatePath: (id) => `/api/v2/views/${encodeURIComponent(id)}.json`,
+    idField: "id",
+  },
+  [MigrationObjectType.TICKET_TRIGGERS]: {
+    type: MigrationObjectType.TICKET_TRIGGERS,
+    collectionKey: "triggers",
+    wrapperKey: "trigger",
+    listPath: "/api/v2/triggers.json",
+    createPath: "/api/v2/triggers.json",
+    updatePath: (id) => `/api/v2/triggers/${encodeURIComponent(id)}.json`,
+    reorderPath: "/api/v2/triggers/reorder.json",
+    idField: "id",
+  },
+  [MigrationObjectType.AUTOMATIONS]: {
+    type: MigrationObjectType.AUTOMATIONS,
+    collectionKey: "automations",
+    wrapperKey: "automation",
+    listPath: "/api/v2/automations.json",
+    createPath: "/api/v2/automations.json",
+    updatePath: (id) => `/api/v2/automations/${encodeURIComponent(id)}.json`,
+    reorderPath: "/api/v2/automations/reorder.json",
+    idField: "id",
+  },
+  [MigrationObjectType.WEBHOOKS]: {
+    type: MigrationObjectType.WEBHOOKS,
+    collectionKey: "webhooks",
+    wrapperKey: "webhook",
+    listPath: "/api/v2/webhooks?page[size]=100",
+    createPath: "/api/v2/webhooks",
+    updatePath: (id) => `/api/v2/webhooks/${encodeURIComponent(id)}`,
+    idField: "id",
+  },
+  [MigrationObjectType.CUSTOM_OBJECTS]: {
+    type: MigrationObjectType.CUSTOM_OBJECTS,
+    collectionKey: "custom_objects",
+    wrapperKey: "custom_object",
+    listPath: "/api/v2/custom_objects",
+    createPath: "/api/v2/custom_objects",
+    updatePath: (key) => `/api/v2/custom_objects/${encodeURIComponent(key)}`,
+    idField: "key",
+  },
+  [MigrationObjectType.CUSTOM_OBJECT_FIELDS]: {
+    type: MigrationObjectType.CUSTOM_OBJECT_FIELDS,
+    collectionKey: "custom_object_fields",
+    wrapperKey: "custom_object_field",
+    listPath: (objectKey) => `/api/v2/custom_objects/${encodeURIComponent(objectKey)}/fields`,
+    createPath: (objectKey) => `/api/v2/custom_objects/${encodeURIComponent(objectKey)}/fields`,
+    updatePath: (objectKey, key) => `/api/v2/custom_objects/${encodeURIComponent(objectKey)}/fields/${encodeURIComponent(key)}`,
+    idField: "key",
+  },
+  [MigrationObjectType.CUSTOM_OBJECT_RELATIONSHIPS]: {
+    type: MigrationObjectType.CUSTOM_OBJECT_RELATIONSHIPS,
+    collectionKey: "custom_object_relationships",
+    wrapperKey: "custom_object_field",
+    listPath: (objectKey) => `/api/v2/custom_objects/${encodeURIComponent(objectKey)}/fields`,
+    createPath: (objectKey) => `/api/v2/custom_objects/${encodeURIComponent(objectKey)}/fields`,
+    updatePath: (objectKey, key) => `/api/v2/custom_objects/${encodeURIComponent(objectKey)}/fields/${encodeURIComponent(key)}`,
+    idField: "key",
+  },
+  [MigrationObjectType.CUSTOM_OBJECT_TRIGGERS]: {
+    type: MigrationObjectType.CUSTOM_OBJECT_TRIGGERS,
+    collectionKey: "triggers",
+    wrapperKey: "trigger",
+    listPath: (objectKey) => `/api/v2/custom_objects/${encodeURIComponent(objectKey)}/triggers.json`,
+    createPath: (objectKey) => `/api/v2/custom_objects/${encodeURIComponent(objectKey)}/triggers.json`,
+    updatePath: (objectKey, id) => `/api/v2/custom_objects/${encodeURIComponent(objectKey)}/triggers/${encodeURIComponent(id)}.json`,
+    idField: "id",
+  },
+  [MigrationObjectType.OMNICHANNEL_QUEUES]: {
+    type: MigrationObjectType.OMNICHANNEL_QUEUES,
+    collectionKey: "queues",
+    wrapperKey: "queue",
+    listPath: "/api/v2/queues",
+    createPath: "/api/v2/queues",
+    updatePath: (id) => `/api/v2/queues/${encodeURIComponent(id)}`,
+    reorderPath: "/api/v2/queues/reorder",
+    idField: "id",
+  },
+  [MigrationObjectType.ROUTING_SETTINGS]: {
+    type: MigrationObjectType.ROUTING_SETTINGS,
+    collectionKey: "routing_settings",
+    wrapperKey: "routing_settings",
+    listPath: "/api/v2/routing_settings.json",
+    readOnlyImportReason: "readable_but_write_not_confirmed",
+    idField: "id",
+  },
+});
+
+export function getEndpoint(type) {
+  return ENDPOINTS[type] || null;
+}
+
+export function getStaticListPath(type) {
+  const endpoint = getEndpoint(type);
+  return typeof endpoint?.listPath === "string" ? endpoint.listPath : null;
+}

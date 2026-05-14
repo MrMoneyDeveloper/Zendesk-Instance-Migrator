@@ -7,8 +7,6 @@
   },
   "defaultLocale": "en",
   "private": true,
-  "singleInstall": false,
-  "version": "3.0",
   "frameworkVersion": "2.0",
   "location": {
     "support": {
