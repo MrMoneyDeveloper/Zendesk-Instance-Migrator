@@ -10,7 +10,9 @@ body {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -46,6 +48,25 @@ input[type="checkbox"] {
 
 input[type="file"] {
   max-width: 260px;
+}
+
+textarea,
+select {
+  border: 1px solid #c7d0de;
+  border-radius: 6px;
+  min-height: 36px;
+  padding: 8px 10px;
+  width: 100%;
+}
+
+input[type="text"],
+input[type="email"],
+input[type="password"] {
+  border: 1px solid #c7d0de;
+  border-radius: 6px;
+  min-height: 36px;
+  padding: 8px 10px;
+  width: 100%;
 }
 
 .app {
@@ -145,6 +166,12 @@ input[type="file"] {
   display: flex;
   gap: 8px;
   min-height: 28px;
+}
+
+.field-column {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .check-row.standalone,

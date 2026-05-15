@@ -5,13 +5,16 @@ import ExecutionProgress from "./components/ExecutionProgress";
 import ExportPanel from "./components/ExportPanel";
 import ImportPanel from "./components/ImportPanel";
 import ModeSelector from "./components/ModeSelector";
+import WebhookBasicAuthSetup from "./components/WebhookBasicAuthSetup";
 import { serializeBundle } from "./migration/bundleBuilder";
 import { validateBundle } from "./migration/bundleValidator";
 import { executeImport } from "./migration/executor";
 import { exportConfiguration } from "./migration/exportService";
+import { stableKeyFor } from "./migration/matchers";
 import { DEFAULT_EXPORT_SCOPE } from "./migration/objectTypes";
 import { buildDryRunPlan } from "./migration/planner";
 import { downloadReportCsv, downloadReportJson } from "./migration/reportExporter";
+import { rewriteZendeskWebhookEndpoint } from "./migration/webhookEndpointRewrite";
 import { downloadFile, timestampedFilename } from "./utils/downloadFile";
 import { parseJsonFile } from "./utils/parseUpload";
 import { createCurrentInstanceApi } from "./zendesk/currentInstanceApi";
@@ -23,10 +26,28 @@ const DEFAULT_IMPORT_OPTIONS = {
   createOnly: false,
   includeInactive: false,
   continueOnError: true,
+  webhookDependencyPolicy: "manual_required",
+  webhookMappingText: "",
 };
 
 function appendLog(setter, entry) {
   setter((previous) => [...previous, entry]);
+}
+
+function parseWebhookMappingText(text) {
+  const value = String(text || "").trim();
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function hasNotificationWebhookDependency(payload) {
+  const text = JSON.stringify(payload || {}).toLowerCase();
+  return text.includes('"notification_webhook"');
 }
 
 function App() {
@@ -54,6 +75,11 @@ function App() {
   const [executionProgress, setExecutionProgress] = useState(null);
   const [executionLogs, setExecutionLogs] = useState([]);
   const [report, setReport] = useState(null);
+  const [webhookSetup, setWebhookSetup] = useState({
+    targetEmail: "",
+    apiToken: "",
+    endpointOverrides: {},
+  });
 
   useEffect(() => {
     let active = true;
@@ -63,6 +89,10 @@ function App() {
         const state = await api.getStartupState();
         if (!active) return;
         setStartup({ loading: false, error: "", state });
+        setWebhookSetup((previous) => ({
+          ...previous,
+          targetEmail: previous.targetEmail || state?.currentUser?.email || "",
+        }));
       } catch (error) {
         if (!active) return;
         setStartup({
@@ -121,6 +151,7 @@ function App() {
     setPlan(null);
     setReport(null);
     setConfirmed(false);
+    setWebhookSetup((previous) => ({ ...previous, apiToken: "", endpointOverrides: {} }));
   }
 
   async function validateUploadedBundle() {
@@ -164,7 +195,11 @@ function App() {
         api,
         bundle: uploadedBundle,
         startupState: startup.state,
-        options: importOptions,
+        options: {
+          ...importOptions,
+          webhookMapping: parseWebhookMappingText(importOptions.webhookMappingText),
+          webhookAuthConfigured: Boolean(webhookSetup.targetEmail && webhookSetup.apiToken),
+        },
       });
       setPlan(dryRunPlan);
     } catch (error) {
@@ -180,6 +215,10 @@ function App() {
 
   async function executeConfirmedImport() {
     if (!uploadedBundle || !plan || !confirmed) return;
+    if (requiresWebhookSetup && (!webhookSetup.targetEmail || !webhookSetup.apiToken)) {
+      appendLog(setExecutionLogs, "Webhook Basic Auth details are required because this bundle contains webhooks and dependent business rules.");
+      return;
+    }
     setExecuting(true);
     setExecutionLogs([]);
     setReport(null);
@@ -190,6 +229,7 @@ function App() {
         bundle: uploadedBundle,
         plan,
         startupState: startup.state,
+        webhookSetup: requiresWebhookSetup ? webhookSetup : null,
         onProgress: (progress) => {
           setExecutionProgress(progress);
           appendLog(setExecutionLogs, progress.message);
@@ -201,8 +241,44 @@ function App() {
       appendLog(setExecutionLogs, error?.message || "Import execution could not complete.");
     } finally {
       setExecuting(false);
+      setWebhookSetup((previous) => ({ ...previous, apiToken: "" }));
     }
   }
+
+  const bundleWebhooks = uploadedBundle?.objects?.webhooks || [];
+  const bundleTriggers = uploadedBundle?.objects?.ticket_triggers || [];
+  const bundleAutomations = uploadedBundle?.objects?.automations || [];
+  const dryRunHasWebhookDeps = (plan?.items || []).some((item) => item?.webhook_dependency);
+  const requiresWebhookSetup =
+    bundleWebhooks.length > 0 ||
+    dryRunHasWebhookDeps ||
+    bundleTriggers.some((item) => hasNotificationWebhookDependency(item?.payload)) ||
+    bundleAutomations.some((item) => hasNotificationWebhookDependency(item?.payload));
+  const targetSubdomain = startup.state?.context?.subdomain || "";
+  const webhookPreview = bundleWebhooks.map((item, index) => {
+    const sourceEndpoint = item?.payload?.endpoint || "";
+    const rewritten = rewriteZendeskWebhookEndpoint({
+      sourceEndpoint,
+      targetSubdomain,
+    });
+    return {
+      key: stableKeyFor("webhooks", item),
+      name: item?.display_name || item?.payload?.name || `Webhook ${index + 1}`,
+      sourceEndpoint,
+      rewrittenEndpoint: rewritten.endpoint,
+      warning: rewritten.warning,
+    };
+  });
+  const dependentTriggers = bundleTriggers
+    .filter((item) => hasNotificationWebhookDependency(item?.payload))
+    .map((item) => item?.display_name || item?.payload?.title || "Untitled trigger");
+  const dependentAutomations = bundleAutomations
+    .filter((item) => hasNotificationWebhookDependency(item?.payload))
+    .map((item) => item?.display_name || item?.payload?.title || "Untitled automation");
+  const executeBlockedReason =
+    requiresWebhookSetup && (!webhookSetup.targetEmail || !webhookSetup.apiToken)
+      ? "Webhook Basic Auth details are required because this bundle contains webhooks and dependent business rules."
+      : "";
 
   if (startup.loading) {
     return (
@@ -279,12 +355,32 @@ function App() {
             onDryRun={runDryRun}
             dryRunRunning={dryRunRunning}
           />
+          <WebhookBasicAuthSetup
+            required={requiresWebhookSetup}
+            targetEmail={webhookSetup.targetEmail}
+            apiToken={webhookSetup.apiToken}
+            onTargetEmailChange={(value) => setWebhookSetup((previous) => ({ ...previous, targetEmail: value }))}
+            onApiTokenChange={(value) => setWebhookSetup((previous) => ({ ...previous, apiToken: value }))}
+            targetSubdomain={targetSubdomain}
+            webhooks={webhookPreview}
+            dependentTriggers={dependentTriggers}
+            dependentAutomations={dependentAutomations}
+            endpointOverrides={webhookSetup.endpointOverrides}
+            onEndpointOverrideChange={(key, value) =>
+              setWebhookSetup((previous) => ({
+                ...previous,
+                endpointOverrides: { ...previous.endpointOverrides, [key]: value },
+              }))
+            }
+          />
           <DryRunSummary
             plan={plan}
             confirmed={confirmed}
             onConfirmChange={setConfirmed}
             onExecute={executeConfirmedImport}
             executing={executing}
+            executeDisabled={Boolean(executeBlockedReason)}
+            executeDisabledReason={executeBlockedReason}
           />
           <ExecutionProgress
             progress={executionProgress}

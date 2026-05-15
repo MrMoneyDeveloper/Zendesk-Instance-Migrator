@@ -95,7 +95,27 @@ export default function ImportPanel({
             />
             <span>Continue on error</span>
           </label>
+          <label className="check-row">
+            <span>Webhook dependency policy</span>
+            <select
+              value={options.webhookDependencyPolicy || "manual_required"}
+              onChange={(event) => onOptionChange("webhookDependencyPolicy", event.target.value)}
+            >
+              <option value="manual_required">Manual required</option>
+              <option value="inactive">Import dependent rules inactive</option>
+              <option value="skip">Skip dependent rules</option>
+            </select>
+          </label>
         </div>
+        <label className="file-input">
+          <span>Webhook source-to-target mapping JSON (optional)</span>
+          <textarea
+            rows={4}
+            placeholder='{"sourceWebhookNameOrId":"targetWebhookId"}'
+            value={options.webhookMappingText || ""}
+            onChange={(event) => onOptionChange("webhookMappingText", event.target.value)}
+          />
+        </label>
       </section>
     </section>
   );

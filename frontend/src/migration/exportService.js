@@ -39,6 +39,39 @@ function removeOrderFromPayload(type, payload) {
   }
 }
 
+function endpointHost(endpoint) {
+  try {
+    return new URL(String(endpoint || "")).hostname;
+  } catch {
+    return "";
+  }
+}
+
+function preserveTicketFormConditionIds(source, payload) {
+  const copyConditions = (sourceList, payloadList) => {
+    if (!Array.isArray(sourceList) || !Array.isArray(payloadList)) return;
+    for (let index = 0; index < Math.min(sourceList.length, payloadList.length); index += 1) {
+      const sourceCondition = sourceList[index] || {};
+      const payloadCondition = payloadList[index] || {};
+      if (sourceCondition.parent_field_id !== undefined) {
+        payloadCondition.parent_field_id = sourceCondition.parent_field_id;
+      }
+      if (Array.isArray(sourceCondition.child_fields) && Array.isArray(payloadCondition.child_fields)) {
+        for (let childIndex = 0; childIndex < Math.min(sourceCondition.child_fields.length, payloadCondition.child_fields.length); childIndex += 1) {
+          const sourceChild = sourceCondition.child_fields[childIndex] || {};
+          const payloadChild = payloadCondition.child_fields[childIndex] || {};
+          if (sourceChild.id !== undefined) payloadChild.id = sourceChild.id;
+          payloadCondition.child_fields[childIndex] = payloadChild;
+        }
+      }
+      payloadList[index] = payloadCondition;
+    }
+  };
+
+  copyConditions(source?.agent_conditions, payload?.agent_conditions);
+  copyConditions(source?.end_user_conditions, payload?.end_user_conditions);
+}
+
 export function normalizeForBundle(type, source, context = {}) {
   const metadata = metadataFromSource(source, {
     object_key: context.objectKey,
@@ -53,14 +86,23 @@ export function normalizeForBundle(type, source, context = {}) {
       : sanitizePayload(source, { stripSecrets: true });
 
   removeOrderFromPayload(type, payload);
+  if (type === MigrationObjectType.TICKET_FORMS) {
+    preserveTicketFormConditionIds(source, payload);
+  }
 
   if (context.objectKey && !payload.object_key) {
     payload.object_key = context.objectKey;
   }
 
+  if (type === MigrationObjectType.WEBHOOKS) {
+    metadata.requires_target_basic_auth = true;
+    metadata.auth_strategy = "zendesk_basic_auth_token";
+    metadata.source_endpoint_host = endpointHost(source?.endpoint || payload?.endpoint);
+  }
+
   if (type === MigrationObjectType.WEBHOOKS && hasWebhookSecretRequirement(source)) {
     metadata.skipped_secret_required = true;
-    warnings.push("Webhook requires manual secret reconfiguration after import.");
+    warnings.push("Webhook requires manual secret reconfiguration after import through target Basic Auth setup.");
   }
 
   return {
@@ -73,12 +115,20 @@ export function normalizeForBundle(type, source, context = {}) {
   };
 }
 
-async function safeFetchAll(api, type, path, collectionKey, log) {
+async function safeFetchAll(api, type, path, collectionKey, log, cache = null) {
   try {
     log?.(`Reading ${type} from ${path}`);
+    if (cache?.has(path)) {
+      return {
+        ok: true,
+        items: cache.get(path),
+      };
+    }
+    const items = await api.fetchAll(path, collectionKey);
+    if (cache) cache.set(path, items);
     return {
       ok: true,
-      items: await api.fetchAll(path, collectionKey),
+      items,
     };
   } catch (error) {
     return {
@@ -152,9 +202,9 @@ function addNormalizedItems(bundle, type, rawItems, options, context = {}) {
   }
 }
 
-async function exportSimpleType({ api, bundle, type, options, log }) {
+async function exportSimpleType({ api, bundle, type, options, log, cache }) {
   const endpoint = getEndpoint(type);
-  const result = await safeFetchAll(api, type, endpoint.listPath, endpoint.collectionKey, log);
+  const result = await safeFetchAll(api, type, endpoint.listPath, endpoint.collectionKey, log, cache);
   if (!result.ok) {
     appendUnsupported(bundle, result.error);
     return;
@@ -164,13 +214,13 @@ async function exportSimpleType({ api, bundle, type, options, log }) {
   log?.(`Exported ${bundle.objects[type].length} ${type}.`);
 }
 
-async function readCustomObjectsForChildren({ api, bundle, options, log }) {
+async function readCustomObjectsForChildren({ api, bundle, options, log, cache }) {
   if (bundle.objects[MigrationObjectType.CUSTOM_OBJECTS].length > 0) {
     return bundle.objects[MigrationObjectType.CUSTOM_OBJECTS].map((item) => item.payload);
   }
 
   const endpoint = getEndpoint(MigrationObjectType.CUSTOM_OBJECTS);
-  const result = await safeFetchAll(api, MigrationObjectType.CUSTOM_OBJECTS, endpoint.listPath, endpoint.collectionKey, log);
+  const result = await safeFetchAll(api, MigrationObjectType.CUSTOM_OBJECTS, endpoint.listPath, endpoint.collectionKey, log, cache);
   if (!result.ok) {
     appendUnsupported(bundle, result.error);
     return [];
@@ -179,16 +229,16 @@ async function readCustomObjectsForChildren({ api, bundle, options, log }) {
   return result.items.filter((item) => options.includeInactive || !isInactive(item));
 }
 
-async function exportCustomObjectFields({ api, bundle, scope, options, log }) {
+async function exportCustomObjectFields({ api, bundle, scope, options, log, cache }) {
   const endpoint = getEndpoint(MigrationObjectType.CUSTOM_OBJECT_FIELDS);
-  const objects = await readCustomObjectsForChildren({ api, bundle, options, log });
+  const objects = await readCustomObjectsForChildren({ api, bundle, options, log, cache });
 
   for (const object of objects) {
     const objectKey = object.key;
     if (!objectKey) continue;
 
     const path = endpoint.listPath(objectKey);
-    const result = await safeFetchAll(api, MigrationObjectType.CUSTOM_OBJECT_FIELDS, path, endpoint.collectionKey, log);
+    const result = await safeFetchAll(api, MigrationObjectType.CUSTOM_OBJECT_FIELDS, path, endpoint.collectionKey, log, cache);
     if (!result.ok) {
       appendUnsupported(bundle, result.error);
       continue;
@@ -210,16 +260,16 @@ async function exportCustomObjectFields({ api, bundle, scope, options, log }) {
   }
 }
 
-async function exportCustomObjectTriggers({ api, bundle, options, log }) {
+async function exportCustomObjectTriggers({ api, bundle, options, log, cache }) {
   const endpoint = getEndpoint(MigrationObjectType.CUSTOM_OBJECT_TRIGGERS);
-  const objects = await readCustomObjectsForChildren({ api, bundle, options, log });
+  const objects = await readCustomObjectsForChildren({ api, bundle, options, log, cache });
 
   for (const object of objects) {
     const objectKey = object.key;
     if (!objectKey) continue;
 
     const path = endpoint.listPath(objectKey);
-    const result = await safeFetchAll(api, MigrationObjectType.CUSTOM_OBJECT_TRIGGERS, path, endpoint.collectionKey, log);
+    const result = await safeFetchAll(api, MigrationObjectType.CUSTOM_OBJECT_TRIGGERS, path, endpoint.collectionKey, log, cache);
     if (!result.ok) {
       appendUnsupported(bundle, result.error);
       continue;
@@ -255,6 +305,7 @@ export async function exportConfiguration({ api, startupState, scope, options = 
   };
 
   const bundle = createEmptyBundle({ source, scope });
+  const exportCache = new Map();
   log("Starting export from the current instance.");
   let customObjectFieldsRead = false;
 
@@ -263,14 +314,14 @@ export async function exportConfiguration({ api, startupState, scope, options = 
 
     if (type === MigrationObjectType.CUSTOM_OBJECT_FIELDS || type === MigrationObjectType.CUSTOM_OBJECT_RELATIONSHIPS) {
       if (!customObjectFieldsRead) {
-        await exportCustomObjectFields({ api, bundle, scope, options: { includeInactive }, log });
+        await exportCustomObjectFields({ api, bundle, scope, options: { includeInactive }, log, cache: exportCache });
         customObjectFieldsRead = true;
       }
       continue;
     }
 
     if (type === MigrationObjectType.CUSTOM_OBJECT_TRIGGERS) {
-      await exportCustomObjectTriggers({ api, bundle, options: { includeInactive }, log });
+      await exportCustomObjectTriggers({ api, bundle, options: { includeInactive }, log, cache: exportCache });
       continue;
     }
 
@@ -279,7 +330,7 @@ export async function exportConfiguration({ api, startupState, scope, options = 
       continue;
     }
 
-    await exportSimpleType({ api, bundle, type, options: { includeInactive }, log });
+    await exportSimpleType({ api, bundle, type, options: { includeInactive }, log, cache: exportCache });
   }
 
   const finalized = finalizeBundle(bundle);

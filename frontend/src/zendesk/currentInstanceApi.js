@@ -12,20 +12,32 @@ function extractHeaders(raw) {
   return raw?.headers || raw?.responseHeaders || {};
 }
 
-function getErrorMessage(error) {
-  return (
-    error?.responseJSON?.details?.base?.[0]?.description ||
-    error?.responseJSON?.error ||
-    error?.responseJSON?.description ||
-    error?.responseText ||
-    error?.message ||
-    "The Zendesk API request did not return an actionable error message."
-  );
+export function extractZendeskError(error) {
+  const status = error?.status || error?.response?.status || error?.statusCode || "";
+  const responseJSON = error?.responseJSON || error?.data;
+  const responseText = error?.responseText;
+
+  if (typeof responseText === "string" && responseText.trim()) {
+    try {
+      const parsed = JSON.parse(responseText);
+      return `${status} ${JSON.stringify(parsed)}`.trim();
+    } catch {
+      return `${status} ${responseText}`.trim();
+    }
+  }
+
+  if (responseJSON && typeof responseJSON === "object") {
+    if (responseJSON.error || responseJSON.description || responseJSON.details) {
+      return `${status} ${JSON.stringify(responseJSON)}`.trim();
+    }
+  }
+
+  return `${status} ${error?.message || "The Zendesk API request did not return an actionable error message."}`.trim();
 }
 
 export function classifyApiError(error, path = "") {
   const status = Number(error?.status || error?.statusCode || error?.responseJSON?.status || 0);
-  const message = getErrorMessage(error);
+  const message = extractZendeskError(error);
 
   if (status === 401 || status === 403) {
     return {

@@ -23,4 +23,30 @@ describe("report export", () => {
     expect(report.manual_required_items).toHaveLength(1);
     expect(reportToCsv(report)).toContain("Groups,1,0,0,0,0");
   });
+
+  it("redacts secret values from report artifacts", () => {
+    const report = buildExecutionReport({
+      plan: { plan_id: "plan-2" },
+      bundle: { bundle_version: "1.0.0", source: { subdomain: "source" }, metadata: {} },
+      target: { subdomain: "target" },
+      startedAt: "2026-05-14T00:00:00.000Z",
+      completedAt: "2026-05-14T00:01:00.000Z",
+      results: [
+        {
+          object_type: "webhooks",
+          display_name: "Notify",
+          status: "created",
+          payload: { authentication: { data: { password: "secret" } } },
+        },
+      ],
+      logs: ["done"],
+      apiErrors: [{ details: { token: "abc" } }],
+      dependencyWarnings: [],
+      webhookCredentialSupplied: true,
+    });
+
+    expect(report.webhook_summary.credential_supplied).toBe("yes");
+    expect(JSON.stringify(report)).not.toContain("secret");
+    expect(JSON.stringify(report)).not.toContain("abc");
+  });
 });

@@ -37,7 +37,10 @@ export default function ExportPanel({
                   checked={Boolean(scope[type])}
                   onChange={(event) => onScopeChange(type, event.target.checked)}
                 />
-                <span>{MIGRATION_OBJECT_LABELS[type]}</span>
+                <span>
+                  {MIGRATION_OBJECT_LABELS[type]}
+                  {type === "routing_settings" ? " (Experimental / unsupported from current app context)" : ""}
+                </span>
               </label>
             ))}
           </div>

@@ -1,5 +1,6 @@
 import { downloadFile, timestampedFilename } from "../utils/downloadFile";
 import { MIGRATION_OBJECT_LABELS, MIGRATION_OBJECT_ORDER } from "./objectTypes";
+import { redactSecrets } from "./webhookAuth";
 
 function escapeCsv(value) {
   const text = String(value ?? "");
@@ -9,7 +10,18 @@ function escapeCsv(value) {
   return text;
 }
 
-export function buildExecutionReport({ plan, bundle, target, startedAt, completedAt, results, logs, apiErrors, dependencyWarnings }) {
+export function buildExecutionReport({
+  plan,
+  bundle,
+  target,
+  startedAt,
+  completedAt,
+  results,
+  logs,
+  apiErrors,
+  dependencyWarnings,
+  webhookCredentialSupplied = false,
+}) {
   const countsByObjectType = MIGRATION_OBJECT_ORDER.reduce((counts, type) => {
     counts[type] = {
       created: 0,
@@ -50,13 +62,18 @@ export function buildExecutionReport({ plan, bundle, target, startedAt, complete
     started_at: startedAt,
     completed_at: completedAt,
     counts_by_object_type: countsByObjectType,
-    created_items: results.filter((item) => item.status === "created"),
-    updated_items: results.filter((item) => item.status === "updated"),
-    skipped_items: results.filter((item) => item.status === "skipped"),
-    failed_items: results.filter((item) => item.status === "failed"),
-    manual_required_items: results.filter((item) => item.status === "manual_required"),
-    api_errors: apiErrors,
-    dependency_warnings: dependencyWarnings,
+    webhook_summary: {
+      credential_supplied: webhookCredentialSupplied ? "yes" : "no",
+      created: results.filter((item) => item.object_type === "webhooks" && item.status === "created").length,
+      updated: results.filter((item) => item.object_type === "webhooks" && item.status === "updated").length,
+    },
+    created_items: redactSecrets(results.filter((item) => item.status === "created")),
+    updated_items: redactSecrets(results.filter((item) => item.status === "updated")),
+    skipped_items: redactSecrets(results.filter((item) => item.status === "skipped")),
+    failed_items: redactSecrets(results.filter((item) => item.status === "failed")),
+    manual_required_items: redactSecrets(results.filter((item) => item.status === "manual_required")),
+    api_errors: redactSecrets(apiErrors),
+    dependency_warnings: redactSecrets(dependencyWarnings),
     logs,
   };
 }

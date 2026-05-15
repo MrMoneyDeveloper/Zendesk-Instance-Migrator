@@ -100,4 +100,55 @@ describe("dry-run plan generation", () => {
     expect(plan.summary.fail).toBe(1);
     expect(plan.blocked[0].reason).toContain("referenced dependency is missing");
   });
+
+  it("applies webhook dependency policy for rules using notification_webhook", async () => {
+    const baseBundle = bundle(
+      {
+        [MigrationObjectType.AUTOMATIONS]: [
+          {
+            metadata: { source_id: 55 },
+            payload: {
+              title: "Webhook Automation",
+              actions: [
+                {
+                  field: "notification_webhook",
+                  value: ["source-wh-1", '{ "ticket": { "comment": { "body":"hello" } } }'],
+                },
+              ],
+            },
+          },
+        ],
+      },
+      { [MigrationObjectType.AUTOMATIONS]: true },
+    );
+
+    const api = apiWithCollections({
+      "/api/v2/automations.json": { automations: [] },
+    });
+
+    const manualPlan = await buildDryRunPlan({
+      api,
+      startupState: { context: { subdomain: "target" } },
+      options: { webhookDependencyPolicy: "manual_required" },
+      bundle: baseBundle,
+    });
+    expect(manualPlan.items[0].action).toBe("MANUAL_REQUIRED");
+
+    const skipPlan = await buildDryRunPlan({
+      api,
+      startupState: { context: { subdomain: "target" } },
+      options: { webhookDependencyPolicy: "skip" },
+      bundle: baseBundle,
+    });
+    expect(skipPlan.items[0].action).toBe("SKIP");
+
+    const inactivePlan = await buildDryRunPlan({
+      api,
+      startupState: { context: { subdomain: "target" } },
+      options: { webhookDependencyPolicy: "inactive" },
+      bundle: baseBundle,
+    });
+    expect(inactivePlan.items[0].action).toBe("CREATE");
+    expect(inactivePlan.items[0].auto_mutation_applied).toBe("imported_inactive_due_to_unmapped_webhook");
+  });
 });

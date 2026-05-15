@@ -9,6 +9,13 @@ const REF_TYPES = Object.freeze({
   CUSTOM_OBJECT_FIELD: "custom_object_field",
   QUEUE: "queue",
 });
+const ZENDESK_SPECIAL_VALUES = new Set(["", "current_user", "current_groups", "requester", "requester_id", "requester_and_ccs", "assignee_id"]);
+function isSpecialZendeskValue(value) {
+  return ZENDESK_SPECIAL_VALUES.has(String(value ?? ""));
+}
+function isWebhookActionField(field) {
+  return String(field || "") === "notification_webhook";
+}
 
 function key(value) {
   return String(value ?? "");
@@ -165,6 +172,12 @@ export class ReferenceMapper {
       }
       for (const value of asArray(node.ticket_field_id)) refs.push({ type: REF_TYPES.TICKET_FIELD, value, label: "ticket_field_id" });
       for (const value of asArray(node.ticket_field_ids)) refs.push({ type: REF_TYPES.TICKET_FIELD, value, label: "ticket_field_ids" });
+      for (const value of asArray(node.parent_field_id)) refs.push({ type: REF_TYPES.TICKET_FIELD, value, label: "parent_field_id" });
+      if (Array.isArray(node.child_fields)) {
+        for (const child of node.child_fields) {
+          if (child?.id !== undefined) refs.push({ type: REF_TYPES.TICKET_FIELD, value: child.id, label: "child_fields.id" });
+        }
+      }
       for (const value of asArray(node.ticket_form_id)) refs.push({ type: REF_TYPES.TICKET_FORM, value, label: "ticket_form_id" });
       for (const value of asArray(node.webhook_id)) refs.push({ type: REF_TYPES.WEBHOOK, value, label: "webhook_id" });
       for (const value of asArray(node.queue_id)) refs.push({ type: REF_TYPES.QUEUE, value, label: "queue_id" });
@@ -175,8 +188,10 @@ export class ReferenceMapper {
       if (field === "ticket_form_id") {
         refs.push(...asArray(value).map((entry) => ({ type: REF_TYPES.TICKET_FORM, value: entry, label: "condition ticket_form_id" })));
       }
-      if (field.includes("webhook")) {
-        refs.push(...asArray(value).map((entry) => ({ type: REF_TYPES.WEBHOOK, value: Array.isArray(entry) ? entry[0] : entry, label: "webhook action" })));
+      if (isWebhookActionField(field)) {
+        if (Array.isArray(value) && value.length > 0) {
+          refs.push({ type: REF_TYPES.WEBHOOK, value: value[0], label: "notification_webhook.id" });
+        }
       }
 
       const ticketFieldMatch = field.match(/(?:ticket_field|custom_fields?)_(\d+)/);
@@ -185,7 +200,7 @@ export class ReferenceMapper {
       }
     });
 
-    return refs.filter((ref) => ref.value !== undefined && ref.value !== null && ref.value !== "");
+    return refs.filter((ref) => ref.value !== undefined && ref.value !== null && !isSpecialZendeskValue(ref.value));
   }
 
   findMissingReferences(payload) {
@@ -200,7 +215,7 @@ export class ReferenceMapper {
     const rewritten = structuredClone(payload || {});
 
     const rewriteScalar = (type, value, label) => {
-      if (value === undefined || value === null || value === "") return value;
+      if (value === undefined || value === null || value === "" || isSpecialZendeskValue(value)) return value;
       const mapped = this.lookup(type, value);
       if (mapped !== undefined) return mapped;
       if (this.hasKnownSource(type, value)) {
@@ -227,6 +242,14 @@ export class ReferenceMapper {
       }
       if (node.ticket_field_id !== undefined) node.ticket_field_id = rewriteScalar(REF_TYPES.TICKET_FIELD, node.ticket_field_id, "ticket_field_id");
       if (node.ticket_field_ids !== undefined) node.ticket_field_ids = rewriteArray(REF_TYPES.TICKET_FIELD, node.ticket_field_ids, "ticket_field_ids");
+      if (node.parent_field_id !== undefined) node.parent_field_id = rewriteScalar(REF_TYPES.TICKET_FIELD, node.parent_field_id, "parent_field_id");
+      if (Array.isArray(node.child_fields)) {
+        node.child_fields = node.child_fields.map((child) =>
+          child && typeof child === "object"
+            ? { ...child, id: rewriteScalar(REF_TYPES.TICKET_FIELD, child.id, "child_fields.id") }
+            : child,
+        );
+      }
       if (node.ticket_form_id !== undefined) node.ticket_form_id = rewriteScalar(REF_TYPES.TICKET_FORM, node.ticket_form_id, "ticket_form_id");
       if (node.webhook_id !== undefined) node.webhook_id = rewriteScalar(REF_TYPES.WEBHOOK, node.webhook_id, "webhook_id");
       if (node.queue_id !== undefined) node.queue_id = rewriteScalar(REF_TYPES.QUEUE, node.queue_id, "queue_id");
@@ -248,17 +271,14 @@ export class ReferenceMapper {
 
       if (node.field === "group_id") node.value = rewriteMaybeArray(REF_TYPES.GROUP, node.value, "condition group_id");
       if (node.field === "ticket_form_id") node.value = rewriteMaybeArray(REF_TYPES.TICKET_FORM, node.value, "condition ticket_form_id");
-      if (String(node.field || "").includes("webhook")) {
-        if (Array.isArray(node.value)) {
-          node.value = node.value.map((entry) => {
-            if (Array.isArray(entry)) {
-              return [rewriteScalar(REF_TYPES.WEBHOOK, entry[0], "webhook action"), ...entry.slice(1)];
-            }
-            return rewriteScalar(REF_TYPES.WEBHOOK, entry, "webhook action");
-          });
-        } else {
-          node.value = rewriteScalar(REF_TYPES.WEBHOOK, node.value, "webhook action");
-        }
+      if (isWebhookActionField(node.field) && Array.isArray(node.value)) {
+        node.value = [rewriteScalar(REF_TYPES.WEBHOOK, node.value[0], "notification_webhook.id"), ...node.value.slice(1)];
+      }
+      if (node.restriction && node.restriction.type === "Group" && Array.isArray(node.restriction.ids)) {
+        node.restriction.ids = rewriteArray(REF_TYPES.GROUP, node.restriction.ids, "restriction.ids");
+      }
+      if (node.required_on_statuses && typeof node.required_on_statuses === "object") {
+        delete node.required_on_statuses.custom_statuses;
       }
     });
 
@@ -271,3 +291,4 @@ export function createReferenceMapper(bundle) {
 }
 
 export { REF_TYPES };
+export { isSpecialZendeskValue };

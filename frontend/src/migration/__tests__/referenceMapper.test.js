@@ -51,4 +51,39 @@ describe("reference mapping", () => {
     const result = mapper.rewritePayload({ ticket_field_ids: [12] });
     expect(result.missing[0]).toMatchObject({ type: "ticket_field", value: 12 });
   });
+
+  it("maps notification_webhook id only and keeps webhook body untouched", () => {
+    const mapper = new ReferenceMapper(
+      bundleWith({
+        [MigrationObjectType.WEBHOOKS]: [{ metadata: { source_id: "source-wh-1" }, payload: { name: "Ticket Updater" } }],
+      }),
+    );
+
+    mapper.registerObjectResult(
+      MigrationObjectType.WEBHOOKS,
+      { metadata: { source_id: "source-wh-1" }, payload: { name: "Ticket Updater" } },
+      { id: "target-wh-9" },
+    );
+
+    const payload = {
+      actions: [
+        {
+          field: "notification_webhook",
+          value: [
+            "source-wh-1",
+            '{ "ticket": { "comment": { "body":"Reopened", "public": false } } }',
+          ],
+        },
+      ],
+    };
+
+    const refs = mapper.collectReferences(payload);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: "webhook", value: "source-wh-1", label: "notification_webhook.id" });
+
+    const rewritten = mapper.rewritePayload(payload);
+    expect(rewritten.missing).toEqual([]);
+    expect(rewritten.payload.actions[0].value[0]).toBe("target-wh-9");
+    expect(rewritten.payload.actions[0].value[1]).toBe('{ "ticket": { "comment": { "body":"Reopened", "public": false } } }');
+  });
 });

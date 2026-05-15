@@ -4,8 +4,10 @@ import { readTargetState } from "./importService";
 import { displayNameFor, findMatch, stableKeyFor } from "./matchers";
 import { MIGRATION_OBJECT_ORDER, MigrationObjectType } from "./objectTypes";
 import { createReferenceMapper } from "./referenceMapper";
+import { classifyPlanItemPortability } from "./portability";
+import { validateBusinessRulePayload } from "./compatibility";
 
-const SUMMARY_KEYS = ["create", "update", "skip", "fail", "manual_required"];
+const SUMMARY_KEYS = ["create", "update", "skip", "fail", "manual_required", "reference_only"];
 
 function planId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -62,7 +64,34 @@ function optionsWithDefaults(options = {}) {
     createOnly: options.createOnly === true,
     includeInactive: options.includeInactive === true,
     continueOnError: options.continueOnError !== false,
+    webhookDependencyPolicy: options.webhookDependencyPolicy || "manual_required",
+    webhookMapping: options.webhookMapping && typeof options.webhookMapping === "object" ? options.webhookMapping : {},
+    webhookAuthConfigured: Boolean(options.webhookAuthConfigured),
   };
+}
+
+function sourceWebhookKeys(bundle) {
+  const keys = new Set();
+  const webhooks = bundle?.objects?.[MigrationObjectType.WEBHOOKS] || [];
+  for (const item of webhooks) {
+    if (item?.metadata?.source_id !== undefined && item?.metadata?.source_id !== null) keys.add(String(item.metadata.source_id));
+    if (item?.payload?.name) keys.add(String(item.payload.name));
+  }
+  return keys;
+}
+
+function webhookRefsForPayload(mapper, payload) {
+  return mapper.collectReferences(payload).filter((ref) => ref.type === "webhook");
+}
+
+function unresolvedWebhookRefs(refs, knownSourceWebhookKeys, webhookMapping = {}) {
+  return refs.filter((ref) => {
+    const value = String(ref.value ?? "");
+    if (!value) return false;
+    if (knownSourceWebhookKeys.has(value)) return false;
+    if (webhookMapping[value] !== undefined && webhookMapping[value] !== null && String(webhookMapping[value]).trim() !== "") return false;
+    return true;
+  });
 }
 
 export async function buildDryRunPlan({ api, bundle, startupState, options = {} }) {
@@ -72,6 +101,7 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
   const { state: targetState, unsupported } = await readTargetState({ api, bundle, scope });
   const unsupportedByType = new Map(unsupported.map((entry) => [entry.object_type, entry]));
   const mapper = createReferenceMapper(bundle);
+  const knownSourceWebhookKeys = sourceWebhookKeys(bundle);
   const summary = emptySummary();
   const items = [];
   const blocked = [];
@@ -89,10 +119,13 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
     for (const [index, item] of sourceItems.entries()) {
       const dependencies = mapper.collectReferences(item.payload || {});
       const missing = mapper.findMissingReferences(item.payload || {});
+      const webhookRefs = webhookRefsForPayload(mapper, item.payload || {});
+      const unresolvedWebhook = unresolvedWebhookRefs(webhookRefs, knownSourceWebhookKeys, importOptions.webhookMapping);
       const itemWarnings = [...(item.warnings || [])];
       const endpointWarning = endpointChangedWarning(type, item, targetItems);
       if (endpointWarning) itemWarnings.push(endpointWarning);
 
+      const portability = classifyPlanItemPortability(type, item);
       let match = null;
       let action = "CREATE";
       let reason = "No matching target item found.";
@@ -101,15 +134,30 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
         const unsupportedAction = actionForUnsupported(type, unsupportedEntry);
         action = unsupportedAction.action;
         reason = unsupportedAction.reason;
+      } else if (!portability.portable) {
+        match = findMatch(type, item, targetItems);
+        if (match) mapper.registerObjectResult(type, item, match);
+        action = "REFERENCE_ONLY";
+        reason = portability.reason;
       } else if (!importOptions.includeInactive && item.active === false) {
         action = "SKIP";
         reason = "Inactive item excluded by import option.";
       } else if (type === MigrationObjectType.ROUTING_SETTINGS) {
         action = "SKIP";
         reason = getEndpoint(type)?.readOnlyImportReason || "readable_but_write_not_confirmed";
-      } else if (item.metadata?.skipped_secret_required) {
+      } else if (item.metadata?.skipped_secret_required && type !== MigrationObjectType.WEBHOOKS) {
         action = "MANUAL_REQUIRED";
         reason = "Webhook requires manual secret reconfiguration after import.";
+      } else if (unresolvedWebhook.length > 0 && (type === MigrationObjectType.TICKET_TRIGGERS || type === MigrationObjectType.AUTOMATIONS || type === MigrationObjectType.CUSTOM_OBJECT_TRIGGERS)) {
+        if (importOptions.webhookDependencyPolicy === "skip") {
+          action = "SKIP";
+          reason = `Skipped because dependent webhook is not mapped: ${unresolvedWebhook.map((ref) => ref.value).join(", ")}.`;
+        } else if (importOptions.webhookDependencyPolicy === "inactive") {
+          reason = `Will import inactive because dependent webhook is not mapped: ${unresolvedWebhook.map((ref) => ref.value).join(", ")}.`;
+        } else {
+          action = "MANUAL_REQUIRED";
+          reason = `Depends on webhook mapping not provided: ${unresolvedWebhook.map((ref) => ref.value).join(", ")}.`;
+        }
       } else if (missing.length > 0) {
         action = "FAIL";
         reason = `Blocked because a referenced dependency is missing: ${missing.map((ref) => `${ref.label} ${ref.value}`).join(", ")}.`;
@@ -129,6 +177,11 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
           }
         }
       }
+      const compatibility = validateBusinessRulePayload(type, item.payload || {});
+      if ((action === "CREATE" || action === "UPDATE") && compatibility.status === "manual_required") {
+        action = "MANUAL_REQUIRED";
+        reason = compatibility.reasons.join(" ");
+      }
 
       const planItem = {
         object_type: type,
@@ -138,10 +191,37 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
         reason,
         dependencies,
         warnings: itemWarnings,
+        classification: portability.classification,
+        compatibility_reasons: compatibility.reasons || [],
         order: item.metadata?.order ?? index,
         source_item: item,
         target_id: match?.id || match?.key || null,
+        auto_mutation_applied:
+          unresolvedWebhook.length > 0 && importOptions.webhookDependencyPolicy === "inactive"
+            ? "imported_inactive_due_to_unmapped_webhook"
+            : null,
+        webhook_dependency:
+          webhookRefs.length > 0
+            ? {
+              refs: webhookRefs.map((ref) => String(ref.value)),
+              unresolved_refs: unresolvedWebhook.map((ref) => String(ref.value)),
+              requires_webhook_auth: (bundle.objects?.[MigrationObjectType.WEBHOOKS] || []).length > 0,
+              auth_configured: importOptions.webhookAuthConfigured,
+              status:
+                unresolvedWebhook.length > 0
+                  ? importOptions.webhookDependencyPolicy === "inactive"
+                    ? "IMPORT_INACTIVE_DUE_TO_WEBHOOK"
+                    : "BLOCKED_WEBHOOK_CREATE_FAILED"
+                  : importOptions.webhookAuthConfigured || (bundle.objects?.[MigrationObjectType.WEBHOOKS] || []).length === 0
+                    ? "READY_AFTER_WEBHOOK"
+                    : "BLOCKED_WEBHOOK_AUTH_REQUIRED",
+            }
+            : null,
       };
+
+      if (type === MigrationObjectType.WEBHOOKS && (action === "CREATE" || action === "UPDATE")) {
+        planItem.classification = action === "CREATE" ? "CREATE_WITH_BASIC_AUTH_REQUIRED" : "UPDATE_WITH_BASIC_AUTH_REQUIRED";
+      }
 
       increment(summary, action);
       if (action === "FAIL") blocked.push(planItem);

@@ -4,9 +4,10 @@ const ACTION_LABELS = [
   ["skip", "Skip"],
   ["fail", "Fail"],
   ["manual_required", "Manual required"],
+  ["reference_only", "Reference only"],
 ];
 
-export default function DryRunSummary({ plan, confirmed, onConfirmChange, onExecute, executing }) {
+export default function DryRunSummary({ plan, confirmed, onConfirmChange, onExecute, executing, executeDisabled, executeDisabledReason }) {
   if (!plan) return null;
 
   return (
@@ -16,10 +17,16 @@ export default function DryRunSummary({ plan, confirmed, onConfirmChange, onExec
           <h2>Dry-run summary</h2>
           <p className="muted">Target instance: {plan.target?.subdomain || "current instance"}</p>
         </div>
-        <button type="button" className="primary" onClick={onExecute} disabled={!confirmed || executing || plan.items.length === 0}>
+        <button
+          type="button"
+          className="primary"
+          onClick={onExecute}
+          disabled={!confirmed || executing || plan.items.length === 0 || executeDisabled}
+        >
           {executing ? "Executing import" : "Execute import"}
         </button>
       </div>
+      {executeDisabledReason ? <div className="notice warning">{executeDisabledReason}</div> : null}
 
       <div className="summary-grid">
         {ACTION_LABELS.map(([key, label]) => (
