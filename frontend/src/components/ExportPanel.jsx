@@ -40,6 +40,7 @@ export default function ExportPanel({
                 <span>
                   {MIGRATION_OBJECT_LABELS[type]}
                   {type === "routing_settings" ? " (Experimental / unsupported from current app context)" : ""}
+                  {type === "tickets" ? " (Large export; users and attachments are not migrated)" : ""}
                 </span>
               </label>
             ))}

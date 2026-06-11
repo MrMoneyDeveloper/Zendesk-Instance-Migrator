@@ -37,7 +37,9 @@ export function validateBundle(bundle) {
     errors.push("Bundle is missing objects.");
   } else {
     for (const type of MIGRATION_OBJECT_ORDER) {
-      if (!Array.isArray(bundle.objects[type])) {
+      if (bundle.objects[type] === undefined) {
+        warnings.push(`Bundle objects.${type} is missing and will be treated as empty.`);
+      } else if (!Array.isArray(bundle.objects[type])) {
         errors.push(`Bundle objects.${type} must be an array.`);
       }
     }

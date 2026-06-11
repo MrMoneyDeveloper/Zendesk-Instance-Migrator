@@ -45,6 +45,8 @@ export function stableKeyFor(type, item) {
       return lower(payload.name);
     case MigrationObjectType.ROUTING_SETTINGS:
       return "routing_settings";
+    case MigrationObjectType.TICKETS:
+      return lower(payload.external_id || metadata.source_id || payload.subject);
     default:
       return lower(payload.key || payload.title || payload.name);
   }

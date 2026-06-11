@@ -27,7 +27,8 @@ Bundles are versioned JSON files generated in a source instance and imported in 
     "custom_object_relationships": true,
     "custom_object_triggers": true,
     "omnichannel_queues": true,
-    "routing_settings": false
+    "routing_settings": false,
+    "tickets": false
   },
   "objects": {
     "groups": [],
@@ -43,7 +44,8 @@ Bundles are versioned JSON files generated in a source instance and imported in 
     "custom_object_relationships": [],
     "custom_object_triggers": [],
     "omnichannel_queues": [],
-    "routing_settings": []
+    "routing_settings": [],
+    "tickets": []
   },
   "metadata": {
     "counts": {},
@@ -82,6 +84,7 @@ Rules:
 - Generated timestamps, URLs, self links, and read-only properties are removed from payloads.
 - Stable keys, names, titles, active state, and ordering metadata are preserved.
 - Webhook secrets are never exported. Webhooks that require unrecoverable authentication are marked with `metadata.skipped_secret_required`.
+- Tickets are optional and create-only. Ticket payloads use Zendesk ticket import fields plus importable comments, and use a migration `external_id` to avoid duplicate imports.
 - Unsupported object types are listed in `metadata.unsupported` with the API path, status, and exact reason.
 
 ## Dry-Run Plan Shape

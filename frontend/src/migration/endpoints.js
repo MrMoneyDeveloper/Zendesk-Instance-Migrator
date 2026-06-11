@@ -129,6 +129,14 @@ export const ENDPOINTS = Object.freeze({
     readOnlyImportReason: "readable_but_write_not_confirmed",
     idField: "id",
   },
+  [MigrationObjectType.TICKETS]: {
+    type: MigrationObjectType.TICKETS,
+    collectionKey: "tickets",
+    wrapperKey: "ticket",
+    listPath: "/api/v2/tickets.json",
+    createPath: "/api/v2/imports/tickets?archive_immediately=true",
+    idField: "id",
+  },
 });
 
 export function getEndpoint(type) {

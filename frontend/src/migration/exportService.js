@@ -1,6 +1,7 @@
 import { createEmptyBundle, finalizeBundle } from "./bundleBuilder";
 import { getEndpoint } from "./endpoints";
 import { MigrationObjectType, MIGRATION_OBJECT_ORDER } from "./objectTypes";
+import { normalizeTicketForImport } from "./ticketPayload";
 import { metadataFromSource, sanitizePayload, sanitizeWebhookPayload, hasWebhookSecretRequirement } from "../utils/sanitizePayload";
 
 function displayValue(source) {
@@ -80,6 +81,29 @@ export function normalizeForBundle(type, source, context = {}) {
   });
 
   const warnings = [];
+  if (type === MigrationObjectType.TICKETS) {
+    const payload = normalizeTicketForImport(source, {
+      comments: context.comments || [],
+      sourceSubdomain: context.sourceSubdomain || "",
+    });
+    const commentAttachments = (context.comments || []).reduce((count, comment) => count + (Array.isArray(comment?.attachments) ? comment.attachments.length : 0), 0);
+    if (commentAttachments > 0) {
+      warnings.push("Ticket comment attachments were not embedded because Zendesk ticket imports require fresh upload tokens.");
+    }
+    return {
+      stable_key: payload.external_id || String(metadata.source_id || ""),
+      display_name: displayValue(payload),
+      active: true,
+      payload,
+      metadata: {
+        ...metadata,
+        comment_count: Array.isArray(payload.comments) ? payload.comments.length : 0,
+        attachment_count: commentAttachments,
+      },
+      warnings,
+    };
+  }
+
   const payload =
     type === MigrationObjectType.WEBHOOKS
       ? sanitizeWebhookPayload(source)
@@ -294,6 +318,50 @@ async function exportRoutingSettings({ api, bundle, log }) {
   bundle.metadata.warnings.push("Routing settings were exported as readable configuration only; import writes are skipped unless explicitly confirmed by endpoint support.");
 }
 
+async function exportTickets({ api, bundle, options, log, cache, sourceSubdomain }) {
+  const endpoint = getEndpoint(MigrationObjectType.TICKETS);
+  const result = await safeFetchAll(api, MigrationObjectType.TICKETS, endpoint.listPath, endpoint.collectionKey, log, cache);
+  if (!result.ok) {
+    appendUnsupported(bundle, result.error);
+    return;
+  }
+
+  for (const ticket of result.items) {
+    if (!options.includeInactive && isInactive(ticket)) {
+      appendSkipped(bundle, {
+        object_type: MigrationObjectType.TICKETS,
+        display_name: displayValue(ticket),
+        reason: "inactive_excluded",
+      });
+      continue;
+    }
+
+    const ticketId = ticket?.id;
+    let comments = [];
+    if (ticketId !== undefined && ticketId !== null) {
+      const commentsPath = `/api/v2/tickets/${encodeURIComponent(ticketId)}/comments.json`;
+      const commentsResult = await safeFetchAll(api, MigrationObjectType.TICKETS, commentsPath, "comments", log, cache);
+      if (commentsResult.ok) {
+        comments = commentsResult.items;
+      } else {
+        appendUnsupported(bundle, commentsResult.error);
+      }
+    }
+
+    const normalized = normalizeForBundle(MigrationObjectType.TICKETS, ticket, {
+      comments,
+      collectionKey: endpoint.collectionKey,
+      sourceSubdomain,
+    });
+    bundle.objects[MigrationObjectType.TICKETS].push(normalized);
+  }
+
+  bundle.metadata.warnings.push(
+    "Tickets were exported for best-effort import. Users, organizations, audit history, metrics, SLAs, and attachment binaries are not migrated by this app.",
+  );
+  log?.(`Exported ${bundle.objects[MigrationObjectType.TICKETS].length} tickets with importable comments.`);
+}
+
 export async function exportConfiguration({ api, startupState, scope, options = {}, onLog }) {
   const log = (message) => onLog?.(`${new Date().toLocaleTimeString()} ${message}`);
   const includeInactive = options.includeInactive === true;
@@ -327,6 +395,11 @@ export async function exportConfiguration({ api, startupState, scope, options = 
 
     if (type === MigrationObjectType.ROUTING_SETTINGS) {
       await exportRoutingSettings({ api, bundle, log });
+      continue;
+    }
+
+    if (type === MigrationObjectType.TICKETS) {
+      await exportTickets({ api, bundle, options: { includeInactive }, log, cache: exportCache, sourceSubdomain: source.subdomain });
       continue;
     }
 

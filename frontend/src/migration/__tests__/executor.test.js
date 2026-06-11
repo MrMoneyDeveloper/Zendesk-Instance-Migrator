@@ -182,4 +182,62 @@ describe("executor", () => {
     expect(calls[0].body.automation.actions).toEqual([]);
     expect(report.created_items).toHaveLength(1);
   });
+
+  it("imports tickets through the ticket import API with comments", async () => {
+    const calls = [];
+    const api = createCurrentInstanceApi({
+      client: {
+        request: async ({ url, type, data }) => {
+          const body = JSON.parse(data);
+          calls.push({ path: url, method: type, body });
+          return { responseJSON: { ticket: { id: 9901, external_id: body.ticket.external_id, subject: body.ticket.subject } } };
+        },
+      },
+    });
+
+    const sourceItem = {
+      metadata: { source_id: 321 },
+      payload: {
+        external_id: "zendesk-migration:source:ticket:321",
+        subject: "Original issue",
+        requester_id: 1001,
+        status: "closed",
+        comments: [{ author_id: 1001, body: "First message", public: true, created_at: "2026-01-01T00:00:00Z" }],
+      },
+    };
+    const plan = {
+      plan_id: "plan-ticket-1",
+      target: { subdomain: "target" },
+      options: { continueOnError: true },
+      target_state: { [MigrationObjectType.TICKETS]: [] },
+      items: [
+        {
+          object_type: MigrationObjectType.TICKETS,
+          display_name: "Original issue",
+          action: "CREATE",
+          source_item: sourceItem,
+          warnings: [],
+        },
+      ],
+    };
+
+    const report = await executeImport({
+      api,
+      plan,
+      startupState: { context: { subdomain: "target" } },
+      bundle: {
+        bundle_version: BUNDLE_VERSION,
+        source: { subdomain: "source" },
+        objects: objectsWith({ [MigrationObjectType.TICKETS]: [sourceItem] }),
+        metadata: {},
+      },
+    });
+
+    expect(calls[0]).toMatchObject({
+      path: "/api/v2/imports/tickets?archive_immediately=true",
+      method: "POST",
+      body: { ticket: sourceItem.payload },
+    });
+    expect(report.created_items[0]).toMatchObject({ display_name: "Original issue", target_id: 9901 });
+  });
 });

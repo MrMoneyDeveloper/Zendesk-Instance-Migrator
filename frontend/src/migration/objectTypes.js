@@ -13,6 +13,7 @@ export const MigrationObjectType = Object.freeze({
   CUSTOM_OBJECT_TRIGGERS: "custom_object_triggers",
   OMNICHANNEL_QUEUES: "omnichannel_queues",
   ROUTING_SETTINGS: "routing_settings",
+  TICKETS: "tickets",
 });
 
 export const MIGRATION_OBJECT_ORDER = Object.freeze([
@@ -30,6 +31,7 @@ export const MIGRATION_OBJECT_ORDER = Object.freeze([
   MigrationObjectType.CUSTOM_OBJECT_TRIGGERS,
   MigrationObjectType.OMNICHANNEL_QUEUES,
   MigrationObjectType.ROUTING_SETTINGS,
+  MigrationObjectType.TICKETS,
 ]);
 
 export const MIGRATION_OBJECT_LABELS = Object.freeze({
@@ -47,6 +49,7 @@ export const MIGRATION_OBJECT_LABELS = Object.freeze({
   [MigrationObjectType.CUSTOM_OBJECT_TRIGGERS]: "Custom object triggers",
   [MigrationObjectType.OMNICHANNEL_QUEUES]: "Omnichannel queues",
   [MigrationObjectType.ROUTING_SETTINGS]: "Routing settings",
+  [MigrationObjectType.TICKETS]: "Tickets and comments",
 });
 
 export const DEFAULT_EXPORT_SCOPE = Object.freeze({
@@ -64,10 +67,10 @@ export const DEFAULT_EXPORT_SCOPE = Object.freeze({
   [MigrationObjectType.CUSTOM_OBJECT_TRIGGERS]: true,
   [MigrationObjectType.OMNICHANNEL_QUEUES]: true,
   [MigrationObjectType.ROUTING_SETTINGS]: false,
+  [MigrationObjectType.TICKETS]: false,
 });
 
 export const EXCLUDED_OBJECT_TYPES = Object.freeze([
-  "Tickets",
   "Help Center articles",
   "Help Center categories/sections",
   "Users",

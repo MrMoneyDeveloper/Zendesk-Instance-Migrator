@@ -165,7 +165,10 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
         match = findMatch(type, item, targetItems);
         if (match) {
           mapper.registerObjectResult(type, item, match);
-          if (importOptions.createOnly) {
+          if (type === MigrationObjectType.TICKETS) {
+            action = "SKIP";
+            reason = "Matching imported ticket exists by external_id; ticket migration is create-only.";
+          } else if (importOptions.createOnly) {
             action = "SKIP";
             reason = "Matching target item exists and create-only mode is enabled.";
           } else if (importOptions.overwriteExisting) {

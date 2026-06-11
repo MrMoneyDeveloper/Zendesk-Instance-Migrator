@@ -34,9 +34,12 @@ Default selected:
 - Custom object triggers
 - Omnichannel queues
 
+Optional:
+
+- Tickets and comments
+
 Default excluded:
 
-- Tickets
 - Help Center articles, categories, and sections
 - Users
 - Organizations
@@ -57,6 +60,7 @@ Routing settings are treated conservatively. The app reports unsupported or read
 - Does not use `localStorage` or `sessionStorage` for credentials.
 - Does not export webhook secrets.
 - Treat migration bundles as confidential because they contain internal business rules and configuration.
+- Ticket migration is best-effort: users, organizations, audit history, metrics, SLAs, and attachment binaries are not migrated by this app.
 
 ## Development
 

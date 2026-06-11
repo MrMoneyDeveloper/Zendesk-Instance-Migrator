@@ -83,4 +83,70 @@ describe("export service", () => {
     expect(item.payload.actions[0].value).toBe("123");
     expect(item.payload.created_at).toBeUndefined();
   });
+
+  it("exports tickets with importable comments and historical timestamps", async () => {
+    const api = {
+      fetchAll: async (path, collectionKey) => {
+        if (path === "/api/v2/tickets.json" && collectionKey === "tickets") {
+          return [
+            {
+              id: 321,
+              subject: "Original issue",
+              description: "First message",
+              requester_id: 1001,
+              group_id: 2002,
+              status: "closed",
+              created_at: "2026-01-01T00:00:00Z",
+              updated_at: "2026-01-02T00:00:00Z",
+              url: "https://source.zendesk.com/api/v2/tickets/321.json",
+            },
+          ];
+        }
+        if (path === "/api/v2/tickets/321/comments.json" && collectionKey === "comments") {
+          return [
+            {
+              id: 1,
+              author_id: 1001,
+              body: "First message",
+              public: true,
+              created_at: "2026-01-01T00:00:00Z",
+              attachments: [{ id: 9 }],
+            },
+            {
+              id: 2,
+              author_id: 1002,
+              body: "Private note",
+              public: false,
+              created_at: "2026-01-01T01:00:00Z",
+            },
+          ];
+        }
+        return [];
+      },
+    };
+
+    const bundle = await exportConfiguration({
+      api,
+      startupState: { context: { subdomain: "source" }, currentUser: {} },
+      scope: { [MigrationObjectType.TICKETS]: true },
+    });
+
+    const ticket = bundle.objects.tickets[0];
+    expect(ticket.payload).toMatchObject({
+      subject: "Original issue",
+      requester_id: 1001,
+      group_id: 2002,
+      status: "closed",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-02T00:00:00Z",
+      external_id: "zendesk-migration:source:ticket:321",
+    });
+    expect(ticket.payload.id).toBeUndefined();
+    expect(ticket.payload.url).toBeUndefined();
+    expect(ticket.payload.comments).toHaveLength(2);
+    expect(ticket.payload.comments[0]).toMatchObject({ author_id: 1001, body: "First message", public: true });
+    expect(ticket.payload.comments[0].id).toBeUndefined();
+    expect(ticket.payload.comments[0].attachments).toBeUndefined();
+    expect(ticket.warnings[0]).toContain("attachments");
+  });
 });
