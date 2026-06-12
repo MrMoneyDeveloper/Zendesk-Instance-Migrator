@@ -4,6 +4,7 @@ import { orderPlanItems } from "./dependencyOrder";
 import { MigrationObjectType } from "./objectTypes";
 import { createReferenceMapper, REF_TYPES } from "./referenceMapper";
 import { buildWebhookAuthentication } from "./webhookAuth";
+import { createSourceZendeskClient, prepareFullTicketPayload } from "./fullTicketMigration";
 import { rewriteZendeskWebhookEndpoint } from "./webhookEndpointRewrite";
 
 function resultFromResponse(data, wrapperKey) {
@@ -93,6 +94,71 @@ function normalizeViewConditionValues(payload) {
   return next;
 }
 
+function dropField(payload, field, warnings, reason) {
+  if (payload && Object.prototype.hasOwnProperty.call(payload, field)) {
+    delete payload[field];
+    warnings.push(reason || `Removed ${field} because it is not safe to reuse across Zendesk instances.`);
+  }
+}
+
+function prepareTicketPayloadForImport(payload, mapper, sourcePayload = {}, { preserveResolvedUserFields = false } = {}) {
+  const warnings = [];
+  const next = structuredClone(payload || {});
+
+  if (!preserveResolvedUserFields) {
+    for (const field of ["requester_id", "submitter_id", "assignee_id", "organization_id"]) {
+      dropField(next, field, warnings);
+    }
+  }
+
+  for (const field of [
+    "brand_id",
+    "custom_status_id",
+    "collaborator_ids",
+    "email_cc_ids",
+    "follower_ids",
+    "sharing_agreement_ids",
+  ]) {
+    dropField(next, field, warnings);
+  }
+
+  for (const field of ["group_id", "ticket_form_id"]) {
+    const refType = field === "group_id" ? REF_TYPES.GROUP : REF_TYPES.TICKET_FORM;
+    if (next[field] !== undefined && mapper.lookup(refType, sourcePayload[field]) === undefined) {
+      dropField(next, field, warnings, `Removed ${field} because no target mapping was available.`);
+    }
+  }
+
+  if (Array.isArray(next.custom_fields)) {
+    const rewrittenFields = [];
+    const sourceFields = Array.isArray(sourcePayload.custom_fields) ? sourcePayload.custom_fields : [];
+    for (const [index, field] of next.custom_fields.entries()) {
+      const sourceFieldId = sourceFields[index]?.id ?? field?.id;
+      const mappedId = mapper.lookup(REF_TYPES.TICKET_FIELD, sourceFieldId);
+      if (mappedId === undefined) {
+        warnings.push(`Removed custom field ${sourceFieldId ?? "(unknown)"} because no target ticket field mapping was available.`);
+        continue;
+      }
+      rewrittenFields.push({ ...field, id: mappedId });
+    }
+    if (rewrittenFields.length > 0) next.custom_fields = rewrittenFields;
+    else delete next.custom_fields;
+  }
+
+  if (Array.isArray(next.comments)) {
+    next.comments = next.comments.map((comment) => {
+      const cleanComment = { ...comment };
+      if (!preserveResolvedUserFields && cleanComment.author_id !== undefined) {
+        delete cleanComment.author_id;
+        warnings.push("Removed comment author_id because user IDs are not portable across Zendesk instances.");
+      }
+      return cleanComment;
+    });
+  }
+
+  return { payload: next, warnings: [...new Set(warnings)] };
+}
+
 async function attemptReorder({ api, type, endpoint, ids, logs, apiErrors }) {
   if (!endpoint?.reorderPath || ids.length === 0) return;
   if (type === MigrationObjectType.TICKET_TRIGGERS) {
@@ -134,7 +200,7 @@ async function attemptReorder({ api, type, endpoint, ids, logs, apiErrors }) {
   }
 }
 
-export async function executeImport({ api, bundle, plan, startupState, onProgress, webhookSetup = null }) {
+export async function executeImport({ api, bundle, plan, startupState, onProgress, webhookSetup = null, fullTicketSetup = null }) {
   if (!plan?.plan_id) {
     throw new Error("Run a dry-run before executing import.");
   }
@@ -147,6 +213,7 @@ export async function executeImport({ api, bundle, plan, startupState, onProgres
   const dependencyWarnings = [];
   const orderedItems = orderPlanItems(plan.items || []);
   const importedIdsByType = {};
+  const importedTicketExternalIds = new Set();
   const webhookMapping = plan.options?.webhookMapping || {};
   const webhookDependencyPolicy = plan.options?.webhookDependencyPolicy || "manual_required";
   const targetSubdomain = startupState?.context?.subdomain || plan.target?.subdomain || "";
@@ -156,6 +223,21 @@ export async function executeImport({ api, bundle, plan, startupState, onProgres
     endpointOverrides: webhookSetup?.endpointOverrides || {},
   };
   let runtimeApiToken = runtimeWebhookSetup.apiToken;
+  const fullTicketOptions = plan.options?.fullTicketMigration
+    ? {
+      fullTicketMigration: true,
+      fullTicketAutoCreate: plan.options?.fullTicketAutoCreate !== false,
+    }
+    : {};
+  const sourceTicketClient =
+    fullTicketOptions.fullTicketMigration && fullTicketSetup?.sourceSubdomain && fullTicketSetup?.email && fullTicketSetup?.apiToken
+      ? createSourceZendeskClient({
+        sourceSubdomain: fullTicketSetup.sourceSubdomain,
+        email: fullTicketSetup.email,
+        apiToken: fullTicketSetup.apiToken,
+      })
+      : null;
+  const fullTicketCache = { users: new Map(), organizations: new Map() };
   const webhookCredentialSupplied = Boolean(runtimeWebhookSetup.targetEmail && runtimeApiToken);
   const webhookWriteItems = orderedItems.filter((item) => item.object_type === MigrationObjectType.WEBHOOKS && isWriteAction(item.action));
   let processedWebhookWrites = 0;
@@ -194,6 +276,16 @@ export async function executeImport({ api, bundle, plan, startupState, onProgres
       continue;
     }
 
+    if (item.object_type === MigrationObjectType.TICKETS) {
+      const externalId = String(item.source_item?.payload?.external_id || "").trim().toLowerCase();
+      if (externalId && importedTicketExternalIds.has(externalId)) {
+        const reason = "Duplicate ticket in this import run skipped by external_id; ticket migration is create-only.";
+        results.push({ object_type: item.object_type, display_name: item.display_name, status: "skipped", reason, warnings: item.warnings || [] });
+        logs.push(reason);
+        continue;
+      }
+    }
+
     const endpoint = getEndpoint(item.object_type);
     if (!endpoint) {
       const message = `${item.object_type} cannot be imported because no endpoint is configured.`;
@@ -206,6 +298,13 @@ export async function executeImport({ api, bundle, plan, startupState, onProgres
     const rewrite = mapper.rewritePayload(item.source_item?.payload || {});
     if (item.auto_mutation_applied === "imported_inactive_due_to_unmapped_webhook") {
       rewrite.payload.active = false;
+    }
+    if (rewrite.missing.length > 0 && item.object_type === MigrationObjectType.TICKETS) {
+      const warning = `Ticket references were not mapped and will be omitted where possible: ${rewrite.missing
+        .map((ref) => `${ref.label} ${ref.value}`)
+        .join(", ")}.`;
+      item.warnings = [...(item.warnings || []), warning];
+      rewrite.missing = [];
     }
     if (rewrite.missing.length > 0) {
       const webhookMissing = rewrite.missing.filter((ref) => ref.type === REF_TYPES.WEBHOOK);
@@ -280,6 +379,24 @@ export async function executeImport({ api, bundle, plan, startupState, onProgres
       if (item.object_type === MigrationObjectType.VIEWS) {
         normalizeViewConditionValues(rewrite.payload);
       }
+      if (item.object_type === MigrationObjectType.TICKETS) {
+        const fullPrepared = await prepareFullTicketPayload({
+          api,
+          item,
+          payload: rewrite.payload,
+          options: fullTicketOptions,
+          sourceClient: sourceTicketClient,
+          cache: fullTicketCache,
+        });
+        rewrite.payload = fullPrepared.payload;
+        item.warnings = [...(item.warnings || []), ...fullPrepared.warnings];
+
+        const prepared = prepareTicketPayloadForImport(rewrite.payload, mapper, item.source_item?.payload || {}, {
+          preserveResolvedUserFields: fullTicketOptions.fullTicketMigration,
+        });
+        rewrite.payload = prepared.payload;
+        item.warnings = [...(item.warnings || []), ...prepared.warnings];
+      }
       if (item.auto_mutation_applied === "imported_inactive_due_to_unmapped_webhook") {
         rewrite.payload.active = false;
       }
@@ -296,7 +413,10 @@ export async function executeImport({ api, bundle, plan, startupState, onProgres
       importedIdsByType[item.object_type] = importedIdsByType[item.object_type] || [];
       importedIdsByType[item.object_type].push(targetId);
 
-      const status = responseStatus(item.action);
+      const status =
+        item.object_type === MigrationObjectType.TICKETS && item.action === "CREATE" && (item.warnings || []).length > 0
+          ? "created_with_warnings"
+          : responseStatus(item.action);
       results.push({
         object_type: item.object_type,
         display_name: item.display_name,
@@ -305,6 +425,10 @@ export async function executeImport({ api, bundle, plan, startupState, onProgres
         warnings: item.warnings || [],
       });
       logs.push(`${status} ${item.object_type} "${item.display_name}".`);
+      if (item.object_type === MigrationObjectType.TICKETS) {
+        const externalId = String(item.source_item?.payload?.external_id || "").trim().toLowerCase();
+        if (externalId) importedTicketExternalIds.add(externalId);
+      }
       if (item.object_type === MigrationObjectType.WEBHOOKS) {
         processedWebhookWrites += 1;
       }

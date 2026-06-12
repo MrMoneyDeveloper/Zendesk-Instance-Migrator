@@ -25,6 +25,7 @@ export function buildExecutionReport({
   const countsByObjectType = MIGRATION_OBJECT_ORDER.reduce((counts, type) => {
     counts[type] = {
       created: 0,
+      created_with_warnings: 0,
       updated: 0,
       skipped: 0,
       failed: 0,
@@ -36,6 +37,7 @@ export function buildExecutionReport({
   for (const result of results) {
     const typeCounts = countsByObjectType[result.object_type] || {
       created: 0,
+      created_with_warnings: 0,
       updated: 0,
       skipped: 0,
       failed: 0,
@@ -43,6 +45,7 @@ export function buildExecutionReport({
     };
 
     if (result.status === "created") typeCounts.created += 1;
+    if (result.status === "created_with_warnings") typeCounts.created_with_warnings += 1;
     if (result.status === "updated") typeCounts.updated += 1;
     if (result.status === "skipped") typeCounts.skipped += 1;
     if (result.status === "failed") typeCounts.failed += 1;
@@ -67,7 +70,7 @@ export function buildExecutionReport({
       created: results.filter((item) => item.object_type === "webhooks" && item.status === "created").length,
       updated: results.filter((item) => item.object_type === "webhooks" && item.status === "updated").length,
     },
-    created_items: redactSecrets(results.filter((item) => item.status === "created")),
+    created_items: redactSecrets(results.filter((item) => item.status === "created" || item.status === "created_with_warnings")),
     updated_items: redactSecrets(results.filter((item) => item.status === "updated")),
     skipped_items: redactSecrets(results.filter((item) => item.status === "skipped")),
     failed_items: redactSecrets(results.filter((item) => item.status === "failed")),
@@ -79,13 +82,14 @@ export function buildExecutionReport({
 }
 
 export function reportToCsv(report) {
-  const rows = [["Object type", "Created", "Updated", "Skipped", "Failed", "Manual required"]];
+  const rows = [["Object type", "Created", "Created with warnings", "Updated", "Skipped", "Failed", "Manual required"]];
 
   for (const type of MIGRATION_OBJECT_ORDER) {
     const counts = report.counts_by_object_type?.[type] || {};
     rows.push([
       MIGRATION_OBJECT_LABELS[type] || type,
       counts.created || 0,
+      counts.created_with_warnings || 0,
       counts.updated || 0,
       counts.skipped || 0,
       counts.failed || 0,

@@ -94,6 +94,7 @@ describe("export service", () => {
               subject: "Original issue",
               description: "First message",
               requester_id: 1001,
+              organization_id: 2001,
               group_id: 2002,
               status: "closed",
               created_at: "2026-01-01T00:00:00Z",
@@ -110,7 +111,7 @@ describe("export service", () => {
               body: "First message",
               public: true,
               created_at: "2026-01-01T00:00:00Z",
-              attachments: [{ id: 9 }],
+              attachments: [{ id: 9, file_name: "receipt.pdf", content_url: "https://source.zendesk.com/attachments/receipt.pdf" }],
             },
             {
               id: 2,
@@ -122,6 +123,15 @@ describe("export service", () => {
           ];
         }
         return [];
+      },
+      request: async ({ path }) => {
+        if (path === "/api/v2/users/1001.json") {
+          return { data: { user: { id: 1001, name: "Requester", email: "requester@example.com", role: "end-user" } } };
+        }
+        if (path === "/api/v2/organizations/2001.json") {
+          return { data: { organization: { id: 2001, name: "Source Org" } } };
+        }
+        return { data: {} };
       },
     };
 
@@ -147,6 +157,9 @@ describe("export service", () => {
     expect(ticket.payload.comments[0]).toMatchObject({ author_id: 1001, body: "First message", public: true });
     expect(ticket.payload.comments[0].id).toBeUndefined();
     expect(ticket.payload.comments[0].attachments).toBeUndefined();
+    expect(ticket.metadata.full_ticket_migration.users["1001"]).toMatchObject({ email: "requester@example.com" });
+    expect(ticket.metadata.full_ticket_migration.organizations["2001"]).toMatchObject({ name: "Source Org" });
+    expect(ticket.metadata.full_ticket_migration.attachments_by_comment_index["0"][0]).toMatchObject({ file_name: "receipt.pdf" });
     expect(ticket.warnings[0]).toContain("attachments");
   });
 });

@@ -5,12 +5,16 @@ export default function ImportPanel({
   validation,
   bundleSummary,
   options,
+  fullTicketSetup,
   onFileChange,
   onValidate,
   onOptionChange,
+  onFullTicketSetupChange,
   onDryRun,
   dryRunRunning,
 }) {
+  const ticketCount = Number(bundleSummary?.counts?.tickets || 0);
+
   return (
     <section className="panel">
       <div className="panel-header">
@@ -96,6 +100,24 @@ export default function ImportPanel({
             <span>Continue on error</span>
           </label>
           <label className="check-row">
+            <input
+              type="checkbox"
+              checked={options.fullTicketMigration}
+              onChange={(event) => onOptionChange("fullTicketMigration", event.target.checked)}
+              disabled={ticketCount === 0}
+            />
+            <span>Full ticket migration</span>
+          </label>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={options.fullTicketAutoCreate}
+              onChange={(event) => onOptionChange("fullTicketAutoCreate", event.target.checked)}
+              disabled={!options.fullTicketMigration}
+            />
+            <span>Create missing users/orgs</span>
+          </label>
+          <label className="check-row">
             <span>Webhook dependency policy</span>
             <select
               value={options.webhookDependencyPolicy || "manual_required"}
@@ -117,6 +139,42 @@ export default function ImportPanel({
           />
         </label>
       </section>
+
+      {options.fullTicketMigration ? (
+        <section className="flat-section">
+          <h3>Full ticket migration</h3>
+          <p className="muted">
+            Source credentials are used only during this import run to read source users, organizations, and attachment files.
+          </p>
+          <div className="section-grid">
+            <label className="field-column">
+              <span>Source Zendesk subdomain</span>
+              <input
+                type="text"
+                value={fullTicketSetup?.sourceSubdomain || ""}
+                onChange={(event) => onFullTicketSetupChange("sourceSubdomain", event.target.value)}
+                placeholder="cxsupporthub"
+              />
+            </label>
+            <label className="field-column">
+              <span>Source API email</span>
+              <input
+                type="email"
+                value={fullTicketSetup?.email || ""}
+                onChange={(event) => onFullTicketSetupChange("email", event.target.value)}
+              />
+            </label>
+            <label className="field-column">
+              <span>Source API token</span>
+              <input
+                type="password"
+                value={fullTicketSetup?.apiToken || ""}
+                onChange={(event) => onFullTicketSetupChange("apiToken", event.target.value)}
+              />
+            </label>
+          </div>
+        </section>
+      ) : null}
     </section>
   );
 }

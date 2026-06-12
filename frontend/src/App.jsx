@@ -28,6 +28,8 @@ const DEFAULT_IMPORT_OPTIONS = {
   continueOnError: true,
   webhookDependencyPolicy: "manual_required",
   webhookMappingText: "",
+  fullTicketMigration: false,
+  fullTicketAutoCreate: true,
 };
 
 function appendLog(setter, entry) {
@@ -79,6 +81,11 @@ function App() {
     targetEmail: "",
     apiToken: "",
     endpointOverrides: {},
+  });
+  const [fullTicketSetup, setFullTicketSetup] = useState({
+    sourceSubdomain: "",
+    email: "",
+    apiToken: "",
   });
 
   useEffect(() => {
@@ -152,6 +159,7 @@ function App() {
     setReport(null);
     setConfirmed(false);
     setWebhookSetup((previous) => ({ ...previous, apiToken: "", endpointOverrides: {} }));
+    setFullTicketSetup((previous) => ({ ...previous, apiToken: "" }));
   }
 
   async function validateUploadedBundle() {
@@ -164,6 +172,11 @@ function App() {
         message: result.valid ? "Bundle validation passed." : result.errors.join(" "),
         summary: result.summary,
       });
+      setFullTicketSetup((previous) => ({
+        ...previous,
+        sourceSubdomain: previous.sourceSubdomain || parsed?.source?.subdomain || "",
+        email: previous.email || startup.state?.currentUser?.email || "",
+      }));
       setPlan(null);
       setConfirmed(false);
     } catch (error) {
@@ -230,6 +243,7 @@ function App() {
         plan,
         startupState: startup.state,
         webhookSetup: requiresWebhookSetup ? webhookSetup : null,
+        fullTicketSetup: importOptions.fullTicketMigration ? fullTicketSetup : null,
         onProgress: (progress) => {
           setExecutionProgress(progress);
           appendLog(setExecutionLogs, progress.message);
@@ -242,6 +256,7 @@ function App() {
     } finally {
       setExecuting(false);
       setWebhookSetup((previous) => ({ ...previous, apiToken: "" }));
+      setFullTicketSetup((previous) => ({ ...previous, apiToken: "" }));
     }
   }
 
@@ -278,6 +293,10 @@ function App() {
   const executeBlockedReason =
     requiresWebhookSetup && (!webhookSetup.targetEmail || !webhookSetup.apiToken)
       ? "Webhook Basic Auth details are required because this bundle contains webhooks and dependent business rules."
+      : importOptions.fullTicketMigration &&
+          (validation.summary?.counts?.tickets || 0) > 0 &&
+          (!fullTicketSetup.sourceSubdomain || !fullTicketSetup.email || !fullTicketSetup.apiToken)
+        ? "Source Zendesk credentials are required for full ticket migration."
       : "";
 
   if (startup.loading) {
@@ -349,9 +368,11 @@ function App() {
             validation={validation}
             bundleSummary={validation.summary}
             options={importOptions}
+            fullTicketSetup={fullTicketSetup}
             onFileChange={handleFileChange}
             onValidate={validateUploadedBundle}
             onOptionChange={updateImportOption}
+            onFullTicketSetupChange={(key, value) => setFullTicketSetup((previous) => ({ ...previous, [key]: value }))}
             onDryRun={runDryRun}
             dryRunRunning={dryRunRunning}
           />

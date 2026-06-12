@@ -151,4 +151,54 @@ describe("dry-run plan generation", () => {
     expect(inactivePlan.items[0].action).toBe("CREATE");
     expect(inactivePlan.items[0].auto_mutation_applied).toBe("imported_inactive_due_to_unmapped_webhook");
   });
+
+  it("does not send tickets with missing references to manual review", async () => {
+    const plan = await buildDryRunPlan({
+      api: apiWithCollections({
+        "/api/v2/tickets.json": { tickets: [] },
+      }),
+      startupState: { context: { subdomain: "target" } },
+      bundle: bundle(
+        {
+          [MigrationObjectType.TICKETS]: [
+            {
+              metadata: { source_id: 321 },
+              payload: {
+                external_id: "zendesk-migration:source:ticket:321",
+                subject: "Original issue",
+                group_id: 999,
+              },
+            },
+          ],
+        },
+        { [MigrationObjectType.TICKETS]: true },
+      ),
+    });
+
+    expect(plan.items[0].action).toBe("CREATE");
+    expect(plan.items[0].warnings[0]).toContain("will be omitted");
+    expect(plan.summary.manual_required).toBe(0);
+    expect(plan.summary.fail).toBe(0);
+  });
+
+  it("skips duplicate tickets in the same bundle by external_id", async () => {
+    const plan = await buildDryRunPlan({
+      api: apiWithCollections({
+        "/api/v2/tickets.json": { tickets: [] },
+      }),
+      startupState: { context: { subdomain: "target" } },
+      bundle: bundle(
+        {
+          [MigrationObjectType.TICKETS]: [
+            { metadata: { source_id: 321 }, payload: { external_id: "zendesk-migration:source:ticket:321", subject: "One" } },
+            { metadata: { source_id: 321 }, payload: { external_id: "zendesk-migration:source:ticket:321", subject: "One again" } },
+          ],
+        },
+        { [MigrationObjectType.TICKETS]: true },
+      ),
+    });
+
+    expect(plan.items.map((item) => item.action)).toEqual(["CREATE", "SKIP"]);
+    expect(plan.items[1].reason).toContain("Duplicate ticket");
+  });
 });

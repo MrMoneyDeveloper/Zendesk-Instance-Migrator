@@ -162,6 +162,34 @@ export function createCurrentInstanceApi({ client = null, queue = createRequestQ
     });
   }
 
+  async function uploadFile({ fileName, blob, contentType = "application/octet-stream" }) {
+    const relativePath = assertRelativePath(`/api/v2/uploads.json?filename=${encodeURIComponent(fileName || "attachment")}`);
+
+    return queue.run(async () => {
+      try {
+        const zafClient = ensureClient();
+        const response = await zafClient.request({
+          url: relativePath,
+          type: "POST",
+          contentType,
+          dataType: "json",
+          httpCompleteResponse: true,
+          processData: false,
+          data: blob,
+        });
+        return extractPayload(response);
+      } catch (error) {
+        const classified = classifyApiError(error, relativePath);
+        const wrapped = new Error(classified.message);
+        wrapped.status = classified.status;
+        wrapped.code = classified.code;
+        wrapped.path = relativePath;
+        wrapped.cause = error;
+        throw wrapped;
+      }
+    });
+  }
+
   async function fetchAll(path, collectionKey) {
     const results = [];
     let nextPath = assertRelativePath(path);
@@ -209,6 +237,7 @@ export function createCurrentInstanceApi({ client = null, queue = createRequestQ
 
   return {
     request,
+    uploadFile,
     fetchAll,
     getContext,
     getCurrentUser,

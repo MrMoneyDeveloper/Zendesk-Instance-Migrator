@@ -1,0 +1,8 @@
+{
+  "app": {
+    "name": "Instance Config Migrator",
+    "short_description": "Export and import Zendesk configuration bundles.",
+    "long_description": "A private admin tool for exporting Zendesk configuration from one instance and importing it into another through a dry-run, review, approval, and execution workflow.",
+    "installation_instructions": "Install the app as a private Zendesk Support app. Open the app from the Zendesk Support navigation bar. Use Export mode in the source instance to generate a migration bundle. Use Import mode in the target instance to upload the bundle, run a dry-run, review the plan, confirm, execute the import, and download the report."
+  }
+}

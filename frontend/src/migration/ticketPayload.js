@@ -37,6 +37,17 @@ const COMMENT_IMPORT_FIELDS = new Set([
   "value",
 ]);
 
+function attachmentMetadata(attachment) {
+  if (!attachment || typeof attachment !== "object") return null;
+  return {
+    id: attachment.id ?? null,
+    file_name: attachment.file_name || attachment.filename || attachment.name || `attachment-${attachment.id || "file"}`,
+    content_type: attachment.content_type || attachment.contentType || "application/octet-stream",
+    size: attachment.size || null,
+    content_url: attachment.content_url || attachment.mapped_content_url || attachment.url || "",
+  };
+}
+
 function pickAllowed(source, allowedFields) {
   return Object.entries(source || {}).reduce((payload, [key, value]) => {
     if (allowedFields.has(key) && value !== undefined && value !== null) {
@@ -58,6 +69,12 @@ export function normalizeTicketCommentForImport(comment) {
     payload.value = comment?.plain_body || comment?.body || "";
   }
   return payload;
+}
+
+export function ticketCommentAttachmentMetadata(comment) {
+  return (Array.isArray(comment?.attachments) ? comment.attachments : [])
+    .map((attachment) => attachmentMetadata(attachment))
+    .filter((attachment) => attachment && attachment.content_url);
 }
 
 export function normalizeTicketForImport(ticket, { comments = [], sourceSubdomain = "" } = {}) {

@@ -106,6 +106,7 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
   const items = [];
   const blocked = [];
   const warnings = [...validation.warnings, ...(bundle.metadata?.warnings || [])];
+  const plannedTicketExternalIds = new Set();
 
   for (const unsupportedEntry of unsupported) {
     warnings.push(unsupportedEntry.message);
@@ -126,6 +127,8 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
       if (endpointWarning) itemWarnings.push(endpointWarning);
 
       const portability = classifyPlanItemPortability(type, item);
+      const isTicket = type === MigrationObjectType.TICKETS;
+      const ticketExternalId = String(item?.payload?.external_id || "").trim().toLowerCase();
       let match = null;
       let action = "CREATE";
       let reason = "No matching target item found.";
@@ -142,6 +145,9 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
       } else if (!importOptions.includeInactive && item.active === false) {
         action = "SKIP";
         reason = "Inactive item excluded by import option.";
+      } else if (isTicket && ticketExternalId && plannedTicketExternalIds.has(ticketExternalId)) {
+        action = "SKIP";
+        reason = "Duplicate ticket in this import bundle skipped by external_id; ticket migration is create-only.";
       } else if (type === MigrationObjectType.ROUTING_SETTINGS) {
         action = "SKIP";
         reason = getEndpoint(type)?.readOnlyImportReason || "readable_but_write_not_confirmed";
@@ -158,6 +164,12 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
           action = "MANUAL_REQUIRED";
           reason = `Depends on webhook mapping not provided: ${unresolvedWebhook.map((ref) => ref.value).join(", ")}.`;
         }
+      } else if (missing.length > 0 && isTicket) {
+        itemWarnings.push(
+          `Ticket has unmapped target-specific references that will be omitted during import: ${missing
+            .map((ref) => `${ref.label} ${ref.value}`)
+            .join(", ")}.`,
+        );
       } else if (missing.length > 0) {
         action = "FAIL";
         reason = `Blocked because a referenced dependency is missing: ${missing.map((ref) => `${ref.label} ${ref.value}`).join(", ")}.`;
@@ -224,6 +236,9 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
 
       if (type === MigrationObjectType.WEBHOOKS && (action === "CREATE" || action === "UPDATE")) {
         planItem.classification = action === "CREATE" ? "CREATE_WITH_BASIC_AUTH_REQUIRED" : "UPDATE_WITH_BASIC_AUTH_REQUIRED";
+      }
+      if (isTicket && action === "CREATE" && ticketExternalId) {
+        plannedTicketExternalIds.add(ticketExternalId);
       }
 
       increment(summary, action);

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { executeImport } from "../executor";
 import { BUNDLE_VERSION, MIGRATION_OBJECT_ORDER, MigrationObjectType } from "../objectTypes";
@@ -10,6 +10,10 @@ function objectsWith(overrides) {
     return objects;
   }, {});
 }
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("executor", () => {
   it("imports ticket fields with relative current-instance API paths", async () => {
@@ -236,8 +240,223 @@ describe("executor", () => {
     expect(calls[0]).toMatchObject({
       path: "/api/v2/imports/tickets?archive_immediately=true",
       method: "POST",
-      body: { ticket: sourceItem.payload },
+      body: {
+        ticket: {
+          external_id: "zendesk-migration:source:ticket:321",
+          subject: "Original issue",
+          status: "closed",
+          comments: [{ body: "First message", public: true, created_at: "2026-01-01T00:00:00Z" }],
+        },
+      },
     });
-    expect(report.created_items[0]).toMatchObject({ display_name: "Original issue", target_id: 9901 });
+    expect(report.created_items[0]).toMatchObject({ display_name: "Original issue", target_id: 9901, status: "created_with_warnings" });
+  });
+
+  it("omits unsafe ticket references and reports created_with_warnings", async () => {
+    const calls = [];
+    const api = createCurrentInstanceApi({
+      client: {
+        request: async ({ url, type, data }) => {
+          const body = JSON.parse(data);
+          calls.push({ path: url, method: type, body });
+          return { responseJSON: { ticket: { id: 9902, external_id: body.ticket.external_id, subject: body.ticket.subject } } };
+        },
+      },
+    });
+
+    const sourceItem = {
+      metadata: { source_id: 322 },
+      payload: {
+        external_id: "zendesk-migration:source:ticket:322",
+        subject: "Ticket with source IDs",
+        requester_id: 1001,
+        assignee_id: 1002,
+        group_id: 999,
+        ticket_form_id: 888,
+        custom_fields: [{ id: 777, value: "vip" }],
+        comments: [{ author_id: 1001, body: "First message", public: true }],
+      },
+    };
+    const plan = {
+      plan_id: "plan-ticket-warnings",
+      target: { subdomain: "target" },
+      options: { continueOnError: true },
+      target_state: { [MigrationObjectType.TICKETS]: [] },
+      items: [
+        {
+          object_type: MigrationObjectType.TICKETS,
+          display_name: "Ticket with source IDs",
+          action: "CREATE",
+          source_item: sourceItem,
+          warnings: [],
+        },
+      ],
+    };
+
+    const report = await executeImport({
+      api,
+      plan,
+      startupState: { context: { subdomain: "target" } },
+      bundle: {
+        bundle_version: BUNDLE_VERSION,
+        source: { subdomain: "source" },
+        objects: objectsWith({ [MigrationObjectType.TICKETS]: [sourceItem] }),
+        metadata: {},
+      },
+    });
+
+    expect(calls[0].body.ticket).toMatchObject({
+      external_id: "zendesk-migration:source:ticket:322",
+      subject: "Ticket with source IDs",
+    });
+    expect(calls[0].body.ticket.requester_id).toBeUndefined();
+    expect(calls[0].body.ticket.assignee_id).toBeUndefined();
+    expect(calls[0].body.ticket.group_id).toBeUndefined();
+    expect(calls[0].body.ticket.ticket_form_id).toBeUndefined();
+    expect(calls[0].body.ticket.custom_fields).toBeUndefined();
+    expect(calls[0].body.ticket.comments[0].author_id).toBeUndefined();
+    expect(report.created_items[0]).toMatchObject({ status: "created_with_warnings", target_id: 9902 });
+  });
+
+  it("skips repeated ticket creates by external_id during one import run", async () => {
+    const calls = [];
+    const api = createCurrentInstanceApi({
+      client: {
+        request: async ({ url, type, data }) => {
+          const body = JSON.parse(data);
+          calls.push({ path: url, method: type, body });
+          return { responseJSON: { ticket: { id: 9903, external_id: body.ticket.external_id } } };
+        },
+      },
+    });
+
+    const first = {
+      metadata: { source_id: 323 },
+      payload: { external_id: "zendesk-migration:source:ticket:323", subject: "Duplicate ticket" },
+    };
+    const second = {
+      metadata: { source_id: 323 },
+      payload: { external_id: "zendesk-migration:source:ticket:323", subject: "Duplicate ticket again" },
+    };
+
+    const report = await executeImport({
+      api,
+      startupState: { context: { subdomain: "target" } },
+      bundle: {
+        bundle_version: BUNDLE_VERSION,
+        source: { subdomain: "source" },
+        objects: objectsWith({ [MigrationObjectType.TICKETS]: [first, second] }),
+        metadata: {},
+      },
+      plan: {
+        plan_id: "plan-ticket-dupes",
+        target: { subdomain: "target" },
+        options: { continueOnError: true },
+        target_state: { [MigrationObjectType.TICKETS]: [] },
+        items: [
+          { object_type: MigrationObjectType.TICKETS, display_name: "Duplicate ticket", action: "CREATE", source_item: first, warnings: [] },
+          { object_type: MigrationObjectType.TICKETS, display_name: "Duplicate ticket again", action: "CREATE", source_item: second, warnings: [] },
+        ],
+      },
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(report.skipped_items[0].reason).toContain("Duplicate ticket");
+  });
+
+  it("full ticket migration maps users/orgs and uploads comment attachments", async () => {
+    const calls = [];
+    const api = createCurrentInstanceApi({
+      client: {
+        request: async ({ url, type, data }) => {
+          const body = data ? JSON.parse(data) : null;
+          calls.push({ path: url, method: type, body });
+
+          if (url.includes("/users/search.json")) {
+            return { responseJSON: { users: [{ id: 7001, email: "requester@example.com", name: "Requester" }] } };
+          }
+          if (url === "/api/v2/users/create_or_update.json") {
+            return { responseJSON: { user: { id: 7002, email: body.user.email, name: body.user.name } } };
+          }
+          if (url.includes("/organizations/search.json")) {
+            return { responseJSON: { organizations: [] } };
+          }
+          if (url === "/api/v2/organizations.json") {
+            return { responseJSON: { organization: { id: 8001, name: body.organization.name } } };
+          }
+          if (url === "/api/v2/imports/tickets?archive_immediately=true") {
+            return { responseJSON: { ticket: { id: 9904, external_id: body.ticket.external_id } } };
+          }
+          return { responseJSON: {} };
+        },
+      },
+    });
+    api.uploadFile = vi.fn(async ({ fileName }) => ({ upload: { token: `token-${fileName}` } }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: { get: () => "text/plain" },
+      blob: async () => new Blob(["hello"], { type: "text/plain" }),
+    });
+
+    const sourceItem = {
+      metadata: {
+        source_id: 324,
+        full_ticket_migration: {
+          users: {
+            1001: { id: 1001, name: "Requester", email: "requester@example.com", role: "end-user" },
+            1002: { id: 1002, name: "Assignee", email: "assignee@example.com", role: "agent" },
+          },
+          organizations: {
+            2001: { id: 2001, name: "Source Org" },
+          },
+          attachments_by_comment_index: {
+            0: [{ id: 9, file_name: "note.txt", content_type: "text/plain", content_url: "https://source.zendesk.com/attachments/note.txt" }],
+          },
+        },
+      },
+      payload: {
+        external_id: "zendesk-migration:source:ticket:324",
+        subject: "Full ticket",
+        requester_id: 1001,
+        assignee_id: 1002,
+        organization_id: 2001,
+        comments: [{ author_id: 1001, body: "With attachment", public: false, created_at: "2026-01-01T00:00:00Z" }],
+      },
+    };
+
+    const report = await executeImport({
+      api,
+      startupState: { context: { subdomain: "target" } },
+      fullTicketSetup: { sourceSubdomain: "source", email: "admin@example.com", apiToken: "token" },
+      bundle: {
+        bundle_version: BUNDLE_VERSION,
+        source: { subdomain: "source" },
+        objects: objectsWith({ [MigrationObjectType.TICKETS]: [sourceItem] }),
+        metadata: {},
+      },
+      plan: {
+        plan_id: "plan-ticket-full",
+        target: { subdomain: "target" },
+        options: { continueOnError: true, fullTicketMigration: true, fullTicketAutoCreate: true },
+        target_state: { [MigrationObjectType.TICKETS]: [] },
+        items: [{ object_type: MigrationObjectType.TICKETS, display_name: "Full ticket", action: "CREATE", source_item: sourceItem, warnings: [] }],
+      },
+    });
+
+    const ticketCall = calls.find((call) => call.path === "/api/v2/imports/tickets?archive_immediately=true");
+    expect(ticketCall.body.ticket).toMatchObject({
+      requester_id: 7001,
+      assignee_id: 7002,
+      organization_id: 8001,
+    });
+    expect(ticketCall.body.ticket.comments[0]).toMatchObject({
+      author_id: 7001,
+      uploads: ["token-note.txt"],
+      public: false,
+    });
+    expect(api.uploadFile).toHaveBeenCalledWith(expect.objectContaining({ fileName: "note.txt" }));
+    expect(report.created_items[0]).toMatchObject({ status: "created_with_warnings", target_id: 9904 });
   });
 });

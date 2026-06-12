@@ -1,7 +1,7 @@
 import { createEmptyBundle, finalizeBundle } from "./bundleBuilder";
 import { getEndpoint } from "./endpoints";
 import { MigrationObjectType, MIGRATION_OBJECT_ORDER } from "./objectTypes";
-import { normalizeTicketForImport } from "./ticketPayload";
+import { normalizeTicketForImport, ticketCommentAttachmentMetadata } from "./ticketPayload";
 import { metadataFromSource, sanitizePayload, sanitizeWebhookPayload, hasWebhookSecretRequirement } from "../utils/sanitizePayload";
 
 function displayValue(source) {
@@ -202,6 +202,77 @@ function appendSkipped(bundle, skipped) {
   bundle.metadata.skipped.push(skipped);
 }
 
+async function safeReadWrapped(api, type, path, wrapperKey, log, cache = null) {
+  try {
+    log?.(`Reading ${type} from ${path}`);
+    if (cache?.has(path)) return { ok: true, item: cache.get(path) };
+    const { data } = await api.request({ path, method: "GET" });
+    const item = data?.[wrapperKey] || data;
+    if (cache) cache.set(path, item);
+    return { ok: true, item };
+  } catch (error) {
+    return {
+      ok: false,
+      item: null,
+      error: {
+        object_type: type,
+        reason: error?.code || "zendesk_api_error",
+        message: error?.message || `${type} could not be read from the current instance.`,
+        path,
+        status: error?.status || null,
+      },
+    };
+  }
+}
+
+function collectTicketUserIds(ticket, comments = []) {
+  const ids = new Set();
+  for (const field of ["requester_id", "submitter_id", "assignee_id"]) {
+    if (ticket?.[field] !== undefined && ticket?.[field] !== null) ids.add(String(ticket[field]));
+  }
+  for (const comment of comments) {
+    if (comment?.author_id !== undefined && comment?.author_id !== null) ids.add(String(comment.author_id));
+  }
+  return [...ids];
+}
+
+async function collectFullTicketMetadata({ api, ticket, comments, log, cache }) {
+  const users = {};
+  const organizations = {};
+  const attachments_by_comment_index = {};
+
+  for (const userId of collectTicketUserIds(ticket, comments)) {
+    const result = await safeReadWrapped(api, MigrationObjectType.TICKETS, `/api/v2/users/${encodeURIComponent(userId)}.json`, "user", log, cache);
+    if (result.ok && result.item) {
+      users[userId] = {
+        id: result.item.id,
+        name: result.item.name || "",
+        email: result.item.email || "",
+        role: result.item.role || "end-user",
+      };
+    }
+  }
+
+  if (ticket?.organization_id !== undefined && ticket?.organization_id !== null) {
+    const orgId = String(ticket.organization_id);
+    const result = await safeReadWrapped(api, MigrationObjectType.TICKETS, `/api/v2/organizations/${encodeURIComponent(orgId)}.json`, "organization", log, cache);
+    if (result.ok && result.item) {
+      organizations[orgId] = {
+        id: result.item.id,
+        name: result.item.name || "",
+        external_id: result.item.external_id || "",
+      };
+    }
+  }
+
+  comments.forEach((comment, index) => {
+    const attachments = ticketCommentAttachmentMetadata(comment);
+    if (attachments.length > 0) attachments_by_comment_index[index] = attachments;
+  });
+
+  return { users, organizations, attachments_by_comment_index };
+}
+
 function addNormalizedItems(bundle, type, rawItems, options, context = {}) {
   for (const raw of rawItems) {
     if (!options.includeInactive && isInactive(raw)) {
@@ -353,11 +424,12 @@ async function exportTickets({ api, bundle, options, log, cache, sourceSubdomain
       collectionKey: endpoint.collectionKey,
       sourceSubdomain,
     });
+    normalized.metadata.full_ticket_migration = await collectFullTicketMetadata({ api, ticket, comments, log, cache });
     bundle.objects[MigrationObjectType.TICKETS].push(normalized);
   }
 
   bundle.metadata.warnings.push(
-    "Tickets were exported for best-effort import. Users, organizations, audit history, metrics, SLAs, and attachment binaries are not migrated by this app.",
+    "Tickets were exported for best-effort import. Full ticket migration can map/create users and organizations and fetch attachment binaries during import when source credentials are provided. Audit history, metrics, and SLAs are not migrated by this app.",
   );
   log?.(`Exported ${bundle.objects[MigrationObjectType.TICKETS].length} tickets with importable comments.`);
 }

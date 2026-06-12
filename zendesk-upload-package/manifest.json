@@ -1,0 +1,16 @@
+{
+  "name": "Instance Config Migrator",
+  "author": {
+    "name": "CX Experts",
+    "email": "support@cxexperts.co.za",
+    "url": "https://support.cxexperts.co.za/hc/en-us"
+  },
+  "defaultLocale": "en",
+  "private": true,
+  "frameworkVersion": "2.0",
+  "location": {
+    "support": {
+      "nav_bar": "assets/iframe.html"
+    }
+  }
+}
