@@ -162,4 +162,204 @@ describe("export service", () => {
     expect(ticket.metadata.full_ticket_migration.attachments_by_comment_index["0"][0]).toMatchObject({ file_name: "receipt.pdf" });
     expect(ticket.warnings[0]).toContain("attachments");
   });
+
+  it("exports only tickets inside the selected created date range", async () => {
+    const commentPaths = [];
+    const api = {
+      fetchAll: async (path, collectionKey) => {
+        if (path === "/api/v2/tickets.json" && collectionKey === "tickets") {
+          return [
+            { id: 1, subject: "Too early", created_at: "2026-01-01T12:00:00Z" },
+            { id: 2, subject: "Inside range", created_at: "2026-01-15T12:00:00Z" },
+            { id: 3, subject: "Too late", created_at: "2026-02-01T12:00:00Z" },
+          ];
+        }
+        if (collectionKey === "comments") {
+          commentPaths.push(path);
+          return [{ id: 9, body: "Included comment", public: true, created_at: "2026-01-15T12:30:00Z" }];
+        }
+        return [];
+      },
+      request: async () => ({ data: {} }),
+    };
+
+    const bundle = await exportConfiguration({
+      api,
+      startupState: { context: { subdomain: "source" }, currentUser: {} },
+      scope: { [MigrationObjectType.TICKETS]: true },
+      options: {
+        ticketExportMode: "date_range",
+        ticketDateRange: { from: "2026-01-10", to: "2026-01-31" },
+      },
+    });
+
+    expect(bundle.objects.tickets).toHaveLength(1);
+    expect(bundle.objects.tickets[0].payload.subject).toBe("Inside range");
+    expect(commentPaths).toEqual(["/api/v2/tickets/2/comments.json"]);
+    expect(bundle.metadata.ticket_filter).toMatchObject({
+      mode: "created_at_date_range",
+      from: "2026-01-10",
+      to: "2026-01-31",
+      channels: [],
+      comment_mode: "all",
+    });
+    expect(bundle.metadata.skipped.map((item) => item.reason)).toEqual(["outside_created_at_range", "outside_created_at_range"]);
+  });
+
+  it("filters ticket exports by channel and standard ticket fields before fetching comments", async () => {
+    const commentPaths = [];
+    const api = {
+      fetchAll: async (path, collectionKey) => {
+        if (path === "/api/v2/tickets.json" && collectionKey === "tickets") {
+          return [
+            {
+              id: 1,
+              subject: "Email urgent incident",
+              via: { channel: "email" },
+              status: "open",
+              type: "incident",
+              priority: "urgent",
+              created_at: "2026-01-15T12:00:00Z",
+            },
+            {
+              id: 2,
+              subject: "Web urgent incident",
+              via: { channel: "web" },
+              status: "open",
+              type: "incident",
+              priority: "urgent",
+              created_at: "2026-01-15T12:00:00Z",
+            },
+            {
+              id: 3,
+              subject: "Email low question",
+              via: { channel: "email" },
+              status: "pending",
+              type: "question",
+              priority: "low",
+              created_at: "2026-01-15T12:00:00Z",
+            },
+          ];
+        }
+        if (collectionKey === "comments") {
+          commentPaths.push(path);
+          return [{ id: 1, body: "Included", public: true, created_at: "2026-01-15T12:00:00Z" }];
+        }
+        return [];
+      },
+      request: async () => ({ data: {} }),
+    };
+
+    const bundle = await exportConfiguration({
+      api,
+      startupState: { context: { subdomain: "source" }, currentUser: {} },
+      scope: { [MigrationObjectType.TICKETS]: true },
+      options: {
+        ticketDateRange: { from: "2026-01-01", to: "2026-01-31" },
+        ticketFilters: {
+          channels: ["email"],
+          statuses: ["open"],
+          types: ["incident"],
+          priorities: ["urgent"],
+        },
+      },
+    });
+
+    expect(bundle.objects.tickets).toHaveLength(1);
+    expect(bundle.objects.tickets[0].payload.subject).toBe("Email urgent incident");
+    expect(commentPaths).toEqual(["/api/v2/tickets/1/comments.json"]);
+    expect(bundle.metadata.ticket_filter).toMatchObject({
+      channels: ["email"],
+      statuses: ["open"],
+      types: ["incident"],
+      priorities: ["urgent"],
+      comment_mode: "all",
+    });
+    expect(bundle.metadata.skipped.map((item) => item.reason)).toEqual(["outside_ticket_filters", "outside_ticket_filters"]);
+  });
+
+  it("filters ticket exports by internal notes", async () => {
+    const api = {
+      fetchAll: async (path, collectionKey) => {
+        if (path === "/api/v2/tickets.json" && collectionKey === "tickets") {
+          return [
+            { id: 1, subject: "Public only", created_at: "2026-01-15T12:00:00Z" },
+            { id: 2, subject: "Has internal note", created_at: "2026-01-15T12:00:00Z" },
+          ];
+        }
+        if (path === "/api/v2/tickets/1/comments.json" && collectionKey === "comments") {
+          return [{ id: 1, body: "Public", public: true, created_at: "2026-01-15T12:00:00Z" }];
+        }
+        if (path === "/api/v2/tickets/2/comments.json" && collectionKey === "comments") {
+          return [{ id: 2, body: "Private note", public: false, created_at: "2026-01-15T12:00:00Z" }];
+        }
+        return [];
+      },
+      request: async () => ({ data: {} }),
+    };
+
+    const bundle = await exportConfiguration({
+      api,
+      startupState: { context: { subdomain: "source" }, currentUser: {} },
+      scope: { [MigrationObjectType.TICKETS]: true },
+      options: {
+        ticketDateRange: { from: "2026-01-01", to: "2026-01-31" },
+        ticketFilters: { commentMode: "internal" },
+      },
+    });
+
+    expect(bundle.objects.tickets).toHaveLength(1);
+    expect(bundle.objects.tickets[0].payload.subject).toBe("Has internal note");
+    expect(bundle.objects.tickets[0].payload.comments[0].public).toBe(false);
+    expect(bundle.metadata.ticket_filter.comment_mode).toBe("internal");
+    expect(bundle.metadata.skipped.map((item) => item.reason)).toEqual(["outside_comment_filter"]);
+  });
+
+  it("filters ticket exports by custom ticket field values", async () => {
+    const commentPaths = [];
+    const api = {
+      fetchAll: async (path, collectionKey) => {
+        if (path === "/api/v2/tickets.json" && collectionKey === "tickets") {
+          return [
+            {
+              id: 1,
+              subject: "Billing ticket",
+              created_at: "2026-01-15T12:00:00Z",
+              custom_fields: [{ id: 12345, value: "billing" }],
+            },
+            {
+              id: 2,
+              subject: "Support ticket",
+              created_at: "2026-01-15T12:00:00Z",
+              custom_fields: [{ id: 12345, value: "support" }],
+            },
+          ];
+        }
+        if (collectionKey === "comments") {
+          commentPaths.push(path);
+          return [{ id: 1, body: "Included", public: true, created_at: "2026-01-15T12:00:00Z" }];
+        }
+        return [];
+      },
+      request: async () => ({ data: {} }),
+    };
+
+    const bundle = await exportConfiguration({
+      api,
+      startupState: { context: { subdomain: "source" }, currentUser: {} },
+      scope: { [MigrationObjectType.TICKETS]: true },
+      options: {
+        ticketDateRange: { from: "2026-01-01", to: "2026-01-31" },
+        ticketFilters: {
+          customFieldFilters: [{ field: "12345", value: "billing" }],
+        },
+      },
+    });
+
+    expect(bundle.objects.tickets).toHaveLength(1);
+    expect(bundle.objects.tickets[0].payload.subject).toBe("Billing ticket");
+    expect(commentPaths).toEqual(["/api/v2/tickets/1/comments.json"]);
+    expect(bundle.metadata.ticket_filter.custom_field_filters).toEqual([{ field: "12345", value: "billing" }]);
+    expect(bundle.metadata.skipped.map((item) => item.reason)).toEqual(["outside_ticket_filters"]);
+  });
 });

@@ -389,8 +389,163 @@ async function exportRoutingSettings({ api, bundle, log }) {
   bundle.metadata.warnings.push("Routing settings were exported as readable configuration only; import writes are skipped unless explicitly confirmed by endpoint support.");
 }
 
+function parseTicketDate(value, endOfDay = false) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const suffix = endOfDay ? "T23:59:59.999" : "T00:00:00.000";
+  const parsed = new Date(`${text}${suffix}`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function normalizeTicketDateFilter(options = {}) {
+  const mode = "date_range";
+  const range = options.ticketDateRange || {};
+  const from = String(range.from || "").trim();
+  const to = String(range.to || "").trim();
+
+  const fromDate = parseTicketDate(from, false);
+  const toDate = parseTicketDate(to, true);
+  return { mode, from, to, fromDate, toDate };
+}
+
+function isTicketInsideDateFilter(ticket, filter) {
+  if (!filter || filter.mode !== "date_range") return true;
+  const createdAt = new Date(ticket?.created_at || "");
+  if (Number.isNaN(createdAt.getTime())) return false;
+  if (filter.fromDate && createdAt < filter.fromDate) return false;
+  if (filter.toDate && createdAt > filter.toDate) return false;
+  return true;
+}
+
+function ticketFilterMetadata(filter) {
+  if (!filter || filter.mode !== "date_range") return { mode: "all" };
+  return {
+    mode: "created_at_date_range",
+    from: filter.from || "",
+    to: filter.to || "",
+  };
+}
+
+function uniqueCleanList(values) {
+  return [...new Set((Array.isArray(values) ? values : []).map((value) => String(value || "").trim().toLowerCase()).filter(Boolean))];
+}
+
+function normalizeCustomFieldFilters(filters) {
+  return (Array.isArray(filters) ? filters : [])
+    .map((filter) => ({
+      field: String(filter?.field || "").trim(),
+      value: String(filter?.value || "").trim(),
+    }))
+    .filter((filter) => filter.field && filter.value);
+}
+
+function normalizeTicketFieldFilters(options = {}) {
+  const filters = options.ticketFilters || {};
+  const commentMode = String(filters.commentMode || "all").trim().toLowerCase();
+  return {
+    channels: uniqueCleanList(filters.channels),
+    statuses: uniqueCleanList(filters.statuses),
+    types: uniqueCleanList(filters.types),
+    priorities: uniqueCleanList(filters.priorities),
+    commentMode: ["public", "internal", "both"].includes(commentMode) ? commentMode : "all",
+    customFieldFilters: normalizeCustomFieldFilters(filters.customFieldFilters),
+  };
+}
+
+function ticketChannelBucket(ticket) {
+  const channel = String(ticket?.via?.channel || ticket?.channel || "").trim().toLowerCase();
+  if (!channel) return "other";
+  if (channel === "email") return "email";
+  if (["web", "web_form", "help_center", "end_user"].includes(channel)) return "web";
+  if (["api", "rest_api"].includes(channel)) return "api";
+  if (["chat", "live_chat"].includes(channel)) return "chat";
+  if (["messaging", "native_messaging", "sunshine_conversations", "whatsapp", "facebook_messenger"].includes(channel)) return "messaging";
+  if (["voice", "phone", "talk", "voicemail"].includes(channel)) return "voice";
+  if (["twitter", "facebook", "instagram", "social"].includes(channel)) return "social";
+  if (["sms", "text"].includes(channel)) return "sms";
+  return "other";
+}
+
+function matchesSelected(values, actual) {
+  if (!values.length) return true;
+  return values.includes(String(actual || "").trim().toLowerCase());
+}
+
+function customFieldValue(ticket, fieldKey) {
+  const fields = Array.isArray(ticket?.custom_fields) ? ticket.custom_fields : [];
+  const wanted = String(fieldKey || "").trim();
+  const match = fields.find((field) => String(field?.id || "") === wanted || String(field?.key || "") === wanted);
+  if (!match) return undefined;
+  return match.value;
+}
+
+function valuesMatch(actual, expected) {
+  if (Array.isArray(actual)) {
+    return actual.some((value) => valuesMatch(value, expected));
+  }
+  return String(actual ?? "").trim().toLowerCase() === String(expected ?? "").trim().toLowerCase();
+}
+
+function ticketMatchesCustomFieldFilters(ticket, filters) {
+  return filters.every((filter) => valuesMatch(customFieldValue(ticket, filter.field), filter.value));
+}
+
+function isTicketInsideFieldFilters(ticket, filters) {
+  if (!matchesSelected(filters.channels, ticketChannelBucket(ticket))) return false;
+  if (!matchesSelected(filters.statuses, ticket?.status)) return false;
+  if (!matchesSelected(filters.types, ticket?.type)) return false;
+  if (!matchesSelected(filters.priorities, ticket?.priority)) return false;
+  if (!ticketMatchesCustomFieldFilters(ticket, filters.customFieldFilters)) return false;
+  return true;
+}
+
+function isTicketInsideCommentFilter(comments, commentMode) {
+  if (commentMode === "all") return true;
+  const hasPublic = comments.some((comment) => comment?.public !== false);
+  const hasInternal = comments.some((comment) => comment?.public === false);
+  if (commentMode === "public") return hasPublic;
+  if (commentMode === "internal") return hasInternal;
+  if (commentMode === "both") return hasPublic && hasInternal;
+  return true;
+}
+
+function fieldFilterMetadata(filters) {
+  return {
+    channels: filters.channels,
+    statuses: filters.statuses,
+    types: filters.types,
+    priorities: filters.priorities,
+    comment_mode: filters.commentMode,
+    custom_field_filters: filters.customFieldFilters,
+  };
+}
+
 async function exportTickets({ api, bundle, options, log, cache, sourceSubdomain }) {
   const endpoint = getEndpoint(MigrationObjectType.TICKETS);
+  const dateFilter = normalizeTicketDateFilter(options);
+  const fieldFilters = normalizeTicketFieldFilters(options);
+  bundle.metadata.ticket_filter = {
+    ...ticketFilterMetadata(dateFilter),
+    ...fieldFilterMetadata(fieldFilters),
+  };
+  if (dateFilter.mode === "date_range") {
+    const fromLabel = dateFilter.from || "beginning";
+    const toLabel = dateFilter.to || "now";
+    log?.(`Exporting tickets created from ${fromLabel} to ${toLabel}.`);
+  } else {
+    log?.("Exporting all tickets.");
+  }
+  if (
+    fieldFilters.channels.length ||
+    fieldFilters.statuses.length ||
+    fieldFilters.types.length ||
+    fieldFilters.priorities.length ||
+    fieldFilters.customFieldFilters.length ||
+    fieldFilters.commentMode !== "all"
+  ) {
+    log?.("Applying selected ticket filters before adding tickets to the bundle.");
+  }
+
   const result = await safeFetchAll(api, MigrationObjectType.TICKETS, endpoint.listPath, endpoint.collectionKey, log, cache);
   if (!result.ok) {
     appendUnsupported(bundle, result.error);
@@ -398,6 +553,24 @@ async function exportTickets({ api, bundle, options, log, cache, sourceSubdomain
   }
 
   for (const ticket of result.items) {
+    if (!isTicketInsideDateFilter(ticket, dateFilter)) {
+      appendSkipped(bundle, {
+        object_type: MigrationObjectType.TICKETS,
+        display_name: displayValue(ticket),
+        reason: "outside_created_at_range",
+      });
+      continue;
+    }
+
+    if (!isTicketInsideFieldFilters(ticket, fieldFilters)) {
+      appendSkipped(bundle, {
+        object_type: MigrationObjectType.TICKETS,
+        display_name: displayValue(ticket),
+        reason: "outside_ticket_filters",
+      });
+      continue;
+    }
+
     if (!options.includeInactive && isInactive(ticket)) {
       appendSkipped(bundle, {
         object_type: MigrationObjectType.TICKETS,
@@ -417,6 +590,15 @@ async function exportTickets({ api, bundle, options, log, cache, sourceSubdomain
       } else {
         appendUnsupported(bundle, commentsResult.error);
       }
+    }
+
+    if (!isTicketInsideCommentFilter(comments, fieldFilters.commentMode)) {
+      appendSkipped(bundle, {
+        object_type: MigrationObjectType.TICKETS,
+        display_name: displayValue(ticket),
+        reason: "outside_comment_filter",
+      });
+      continue;
     }
 
     const normalized = normalizeForBundle(MigrationObjectType.TICKETS, ticket, {
@@ -471,7 +653,7 @@ export async function exportConfiguration({ api, startupState, scope, options = 
     }
 
     if (type === MigrationObjectType.TICKETS) {
-      await exportTickets({ api, bundle, options: { includeInactive }, log, cache: exportCache, sourceSubdomain: source.subdomain });
+      await exportTickets({ api, bundle, options: { ...options, includeInactive }, log, cache: exportCache, sourceSubdomain: source.subdomain });
       continue;
     }
 

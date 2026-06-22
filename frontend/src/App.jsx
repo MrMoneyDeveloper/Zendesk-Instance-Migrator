@@ -32,6 +32,29 @@ const DEFAULT_IMPORT_OPTIONS = {
   fullTicketAutoCreate: true,
 };
 
+const DEFAULT_TICKET_EXPORT_OPTIONS = {
+  ticketExportMode: "date_range",
+  ticketDateRange: {
+    from: "",
+    to: "",
+  },
+  ticketFilters: {
+    channels: [],
+    statuses: [],
+    types: [],
+    priorities: [],
+    commentMode: "all",
+    customFieldFilters: [],
+  },
+};
+
+const DEFAULT_TICKET_IMPORT_OPTIONS = {
+  ticketDateRange: {
+    from: "",
+    to: "",
+  },
+};
+
 function appendLog(setter, entry) {
   setter((previous) => [...previous, entry]);
 }
@@ -52,6 +75,45 @@ function hasNotificationWebhookDependency(payload) {
   return text.includes('"notification_webhook"');
 }
 
+function popupForTicketRangeError(error, context) {
+  if (!error) return null;
+  if (error.includes("From date must be before")) {
+    return {
+      title: "Check the date range",
+      message: "The From date must be before or the same as the To date.",
+    };
+  }
+  if (context === "import") {
+    return {
+      title: "Ticket import range required",
+      message: "Please choose a From date, a To date, or both before running the ticket import dry-run.",
+    };
+  }
+  return {
+    title: "Ticket date range required",
+    message: "Please choose a From date, a To date, or both before exporting tickets. This prevents accidentally exporting every ticket in the account.",
+  };
+}
+
+export function validateTicketExportOptions(scope, options) {
+  if (!scope?.tickets) return "";
+  const from = String(options.ticketDateRange?.from || "").trim();
+  const to = String(options.ticketDateRange?.to || "").trim();
+  if (!from && !to) return "A ticket date range is required to prevent accidental full ticket exports. Choose a From date, a To date, or both.";
+  if (from && to && from > to) return "Ticket migration range is invalid: From date must be before or equal to To date.";
+  return "";
+}
+
+export function validateTicketImportOptions(bundleSummary, options) {
+  const ticketCount = Number(bundleSummary?.counts?.tickets || 0);
+  if (ticketCount <= 0) return "";
+  const from = String(options.ticketDateRange?.from || "").trim();
+  const to = String(options.ticketDateRange?.to || "").trim();
+  if (!from && !to) return "A ticket import date range is required before importing tickets. Choose a From date, a To date, or both.";
+  if (from && to && from > to) return "Ticket import range is invalid: From date must be before or equal to To date.";
+  return "";
+}
+
 function App() {
   const api = useMemo(() => createCurrentInstanceApi(), []);
   const [startup, setStartup] = useState({
@@ -62,6 +124,7 @@ function App() {
   const [mode, setMode] = useState("export");
   const [scope, setScope] = useState({ ...DEFAULT_EXPORT_SCOPE });
   const [includeInactiveExport, setIncludeInactiveExport] = useState(false);
+  const [ticketExportOptions, setTicketExportOptions] = useState(DEFAULT_TICKET_EXPORT_OPTIONS);
   const [exporting, setExporting] = useState(false);
   const [exportLogs, setExportLogs] = useState([]);
   const [bundle, setBundle] = useState(null);
@@ -70,6 +133,7 @@ function App() {
   const [uploadedBundle, setUploadedBundle] = useState(null);
   const [validation, setValidation] = useState({ valid: false, message: "", summary: null });
   const [importOptions, setImportOptions] = useState(DEFAULT_IMPORT_OPTIONS);
+  const [ticketImportOptions, setTicketImportOptions] = useState(DEFAULT_TICKET_IMPORT_OPTIONS);
   const [dryRunRunning, setDryRunRunning] = useState(false);
   const [plan, setPlan] = useState(null);
   const [confirmed, setConfirmed] = useState(false);
@@ -77,6 +141,7 @@ function App() {
   const [executionProgress, setExecutionProgress] = useState(null);
   const [executionLogs, setExecutionLogs] = useState([]);
   const [report, setReport] = useState(null);
+  const [popup, setPopup] = useState(null);
   const [webhookSetup, setWebhookSetup] = useState({
     targetEmail: "",
     apiToken: "",
@@ -122,6 +187,13 @@ function App() {
   }
 
   async function runExport() {
+    const ticketRangeError = validateTicketExportOptions(scope, ticketExportOptions);
+    if (ticketRangeError) {
+      setPopup(popupForTicketRangeError(ticketRangeError, "export"));
+      setBundle(null);
+      return;
+    }
+
     setExporting(true);
     setExportLogs([]);
     setBundle(null);
@@ -131,7 +203,7 @@ function App() {
         api,
         startupState: startup.state,
         scope,
-        options: { includeInactive: includeInactiveExport },
+        options: { includeInactive: includeInactiveExport, ...ticketExportOptions },
         onLog: (entry) => appendLog(setExportLogs, entry),
       });
       setBundle(result);
@@ -160,6 +232,49 @@ function App() {
     setConfirmed(false);
     setWebhookSetup((previous) => ({ ...previous, apiToken: "", endpointOverrides: {} }));
     setFullTicketSetup((previous) => ({ ...previous, apiToken: "" }));
+  }
+
+  function updateTicketDateRange(key, value) {
+    setTicketExportOptions((previous) => ({
+      ...previous,
+      ticketDateRange: {
+        ...previous.ticketDateRange,
+        [key]: value,
+      },
+    }));
+    setBundle(null);
+  }
+
+  function updateTicketFilters(nextFilters) {
+    setTicketExportOptions((previous) => ({
+      ...previous,
+      ticketFilters: {
+        ...previous.ticketFilters,
+        ...nextFilters,
+      },
+    }));
+    setBundle(null);
+  }
+
+  function updateTicketImportDateRange(key, value) {
+    setTicketImportOptions((previous) => ({
+      ...previous,
+      ticketDateRange: {
+        ...previous.ticketDateRange,
+        [key]: value,
+      },
+    }));
+    if (uploadedBundle) {
+      setValidation((previous) => ({
+        ...previous,
+        valid: true,
+        message: previous.message?.includes("ticket import")
+          ? "Bundle validation passed."
+          : previous.message,
+      }));
+    }
+    setPlan(null);
+    setConfirmed(false);
   }
 
   async function validateUploadedBundle() {
@@ -197,6 +312,15 @@ function App() {
 
   async function runDryRun() {
     if (!uploadedBundle) return;
+    const ticketRangeError = validateTicketImportOptions(validation.summary, ticketImportOptions);
+    if (ticketRangeError) {
+      setPopup(popupForTicketRangeError(ticketRangeError, "import"));
+      setPlan(null);
+      setReport(null);
+      setConfirmed(false);
+      return;
+    }
+
     setDryRunRunning(true);
     setPlan(null);
     setReport(null);
@@ -210,6 +334,7 @@ function App() {
         startupState: startup.state,
         options: {
           ...importOptions,
+          ticketImportDateRange: ticketImportOptions.ticketDateRange,
           webhookMapping: parseWebhookMappingText(importOptions.webhookMappingText),
           webhookAuthConfigured: Boolean(webhookSetup.targetEmail && webhookSetup.apiToken),
         },
@@ -346,6 +471,20 @@ function App() {
         </div>
       </header>
 
+      {popup ? (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="range-warning-title">
+            <h2 id="range-warning-title">{popup.title}</h2>
+            <p>{popup.message}</p>
+            <div className="modal-actions">
+              <button type="button" className="primary" onClick={() => setPopup(null)} autoFocus>
+                OK
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
       <ModeSelector mode={mode} onSelect={setMode} />
 
       {mode === "export" ? (
@@ -353,8 +492,11 @@ function App() {
           startupState={startup.state}
           scope={scope}
           includeInactive={includeInactiveExport}
+          ticketExportOptions={ticketExportOptions}
           onScopeChange={updateScope}
           onIncludeInactiveChange={setIncludeInactiveExport}
+          onTicketDateRangeChange={updateTicketDateRange}
+          onTicketFiltersChange={updateTicketFilters}
           onRunExport={runExport}
           exporting={exporting}
           logs={exportLogs}
@@ -368,10 +510,12 @@ function App() {
             validation={validation}
             bundleSummary={validation.summary}
             options={importOptions}
+            ticketImportOptions={ticketImportOptions}
             fullTicketSetup={fullTicketSetup}
             onFileChange={handleFileChange}
             onValidate={validateUploadedBundle}
             onOptionChange={updateImportOption}
+            onTicketImportDateRangeChange={updateTicketImportDateRange}
             onFullTicketSetupChange={(key, value) => setFullTicketSetup((previous) => ({ ...previous, [key]: value }))}
             onDryRun={runDryRun}
             dryRunRunning={dryRunRunning}

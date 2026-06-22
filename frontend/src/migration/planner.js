@@ -67,7 +67,35 @@ function optionsWithDefaults(options = {}) {
     webhookDependencyPolicy: options.webhookDependencyPolicy || "manual_required",
     webhookMapping: options.webhookMapping && typeof options.webhookMapping === "object" ? options.webhookMapping : {},
     webhookAuthConfigured: Boolean(options.webhookAuthConfigured),
+    ticketImportDateRange: {
+      from: String(options.ticketImportDateRange?.from || "").trim(),
+      to: String(options.ticketImportDateRange?.to || "").trim(),
+    },
   };
+}
+
+function startOfLocalDate(dateText) {
+  if (!dateText) return null;
+  const date = new Date(`${dateText}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function endOfLocalDate(dateText) {
+  if (!dateText) return null;
+  const date = new Date(`${dateText}T23:59:59.999`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function ticketOutsideImportRange(item, ticketImportDateRange) {
+  const from = startOfLocalDate(ticketImportDateRange?.from);
+  const to = endOfLocalDate(ticketImportDateRange?.to);
+  if (!from && !to) return false;
+
+  const createdAt = new Date(item?.payload?.created_at || item?.metadata?.created_at || "");
+  if (Number.isNaN(createdAt.getTime())) return false;
+  if (from && createdAt < from) return true;
+  if (to && createdAt > to) return true;
+  return false;
 }
 
 function sourceWebhookKeys(bundle) {
@@ -133,7 +161,10 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
       let action = "CREATE";
       let reason = "No matching target item found.";
 
-      if (unsupportedEntry) {
+      if (isTicket && ticketOutsideImportRange(item, importOptions.ticketImportDateRange)) {
+        action = "SKIP";
+        reason = "Ticket skipped because its created_at is outside the selected ticket import range.";
+      } else if (unsupportedEntry) {
         const unsupportedAction = actionForUnsupported(type, unsupportedEntry);
         action = unsupportedAction.action;
         reason = unsupportedAction.reason;

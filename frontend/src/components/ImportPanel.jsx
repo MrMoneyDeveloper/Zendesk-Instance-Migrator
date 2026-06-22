@@ -5,10 +5,12 @@ export default function ImportPanel({
   validation,
   bundleSummary,
   options,
+  ticketImportOptions,
   fullTicketSetup,
   onFileChange,
   onValidate,
   onOptionChange,
+  onTicketImportDateRangeChange,
   onFullTicketSetupChange,
   onDryRun,
   dryRunRunning,
@@ -139,6 +141,31 @@ export default function ImportPanel({
           />
         </label>
       </section>
+
+      {ticketCount > 0 ? (
+        <section className="flat-section ticket-range-card">
+          <h3>Ticket import range</h3>
+          <div className="notice warning">A ticket import date range is required before importing tickets.</div>
+          <div className="ticket-range-grid">
+            <label className="field-column">
+              <span>From</span>
+              <input
+                type="date"
+                value={ticketImportOptions?.ticketDateRange?.from || ""}
+                onChange={(event) => onTicketImportDateRangeChange("from", event.target.value)}
+              />
+            </label>
+            <label className="field-column">
+              <span>To</span>
+              <input
+                type="date"
+                value={ticketImportOptions?.ticketDateRange?.to || ""}
+                onChange={(event) => onTicketImportDateRangeChange("to", event.target.value)}
+              />
+            </label>
+          </div>
+        </section>
+      ) : null}
 
       {options.fullTicketMigration ? (
         <section className="flat-section">

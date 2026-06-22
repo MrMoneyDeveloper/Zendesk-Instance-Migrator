@@ -201,4 +201,45 @@ describe("dry-run plan generation", () => {
     expect(plan.items.map((item) => item.action)).toEqual(["CREATE", "SKIP"]);
     expect(plan.items[1].reason).toContain("Duplicate ticket");
   });
+
+  it("skips tickets outside the selected import created-date range", async () => {
+    const plan = await buildDryRunPlan({
+      api: apiWithCollections({
+        "/api/v2/tickets.json": { tickets: [] },
+      }),
+      startupState: { context: { subdomain: "target" } },
+      options: {
+        ticketImportDateRange: { from: "2026-01-10", to: "2026-01-20" },
+      },
+      bundle: bundle(
+        {
+          [MigrationObjectType.TICKETS]: [
+            {
+              metadata: { source_id: 321 },
+              payload: {
+                external_id: "zendesk-migration:source:ticket:321",
+                subject: "Inside",
+                created_at: "2026-01-15T12:00:00Z",
+              },
+            },
+            {
+              metadata: { source_id: 322 },
+              payload: {
+                external_id: "zendesk-migration:source:ticket:322",
+                subject: "Outside",
+                created_at: "2026-02-01T12:00:00Z",
+              },
+            },
+          ],
+        },
+        { [MigrationObjectType.TICKETS]: true },
+      ),
+    });
+
+    expect(plan.items.map((item) => item.action)).toEqual(["CREATE", "SKIP"]);
+    expect(plan.items[1].reason).toContain("outside the selected ticket import range");
+    expect(plan.summary.create).toBe(1);
+    expect(plan.summary.skip).toBe(1);
+    expect(plan.summary.fail).toBe(0);
+  });
 });

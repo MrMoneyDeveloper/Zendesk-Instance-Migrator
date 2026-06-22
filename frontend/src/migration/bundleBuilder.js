@@ -47,6 +47,7 @@ export function finalizeBundle(bundle) {
       warnings: bundle.metadata?.warnings || [],
       unsupported: bundle.metadata?.unsupported || [],
       skipped: bundle.metadata?.skipped || [],
+      ...(bundle.metadata?.ticket_filter ? { ticket_filter: bundle.metadata.ticket_filter } : {}),
     },
   };
 }
