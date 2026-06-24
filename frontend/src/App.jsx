@@ -147,6 +147,21 @@ function helpCenterItemCount(bundleSummary) {
   );
 }
 
+function buildImportSteps({ selectedFile, validation, plan, executing, report }) {
+  const hasFile = Boolean(selectedFile);
+  const validated = Boolean(validation?.valid);
+  const dryRunReady = Boolean(plan);
+  const importing = Boolean(executing || report);
+
+  return [
+    { label: "Upload bundle", complete: hasFile, active: !hasFile },
+    { label: "Validate", complete: validated, active: hasFile && !validated },
+    { label: "Dry-run", complete: dryRunReady, active: validated && !dryRunReady },
+    { label: "Review", complete: importing, active: dryRunReady && !importing },
+    { label: "Import", complete: Boolean(report), active: Boolean(executing) },
+  ];
+}
+
 function App() {
   const api = useMemo(() => createCurrentInstanceApi(), []);
   const [theme, setTheme] = useState(() => {
@@ -549,6 +564,7 @@ function App() {
           (!fullTicketSetup.sourceSubdomain || !fullTicketSetup.email || !fullTicketSetup.apiToken)
         ? "Source Zendesk credentials are required for full ticket migration."
       : "";
+  const importSteps = buildImportSteps({ selectedFile, validation, plan, executing, report });
 
   if (startup.loading) {
     return (
@@ -588,12 +604,21 @@ function App() {
   return (
     <main className={`app theme-${theme}`}>
       <header className="app-header">
-        <div>
-          <h1>Instance Config Migrator</h1>
-          <p className="muted">
-            Current instance detected: {startup.state.context?.subdomain || "Unavailable"}; signed in as{" "}
-            {startup.state.currentUser?.email || "current admin"}.
-          </p>
+        <div className="app-header-main">
+          <div className="app-icon-tile" aria-hidden="true">ICM</div>
+          <div>
+            <h1>Instance Config Migrator</h1>
+            <div className="header-meta-grid" aria-label="Current Zendesk session">
+              <div className="header-meta-card">
+                <span>Current instance</span>
+                <strong>{startup.state.context?.subdomain || "Unavailable"}</strong>
+              </div>
+              <div className="header-meta-card">
+                <span>Signed in as</span>
+                <strong>{startup.state.currentUser?.email || "current admin"}</strong>
+              </div>
+            </div>
+          </div>
         </div>
         <button type="button" className="theme-toggle" onClick={toggleTheme}>
           {theme === "dark" ? "Light mode" : "Dark mode"}
@@ -644,6 +669,7 @@ function App() {
               helpCenterDestinationOptions={helpCenterDestinationOptions}
               ticketImportOptions={ticketImportOptions}
               fullTicketSetup={fullTicketSetup}
+              importSteps={importSteps}
               onFileChange={handleFileChange}
               onValidate={validateUploadedBundle}
               onOptionChange={updateImportOption}

@@ -8,6 +8,7 @@ export default function ImportPanel({
   helpCenterDestinationOptions,
   ticketImportOptions,
   fullTicketSetup,
+  importSteps,
   onFileChange,
   onValidate,
   onOptionChange,
@@ -35,15 +36,52 @@ export default function ImportPanel({
         </button>
       </div>
 
-      <div className="upload-row">
-        <label className="file-input">
-          <span>Upload migration bundle</span>
-          <input type="file" accept="application/json,.json" onChange={(event) => onFileChange(event.target.files?.[0] || null)} />
+      {Array.isArray(importSteps) && importSteps.length > 0 ? (
+        <ol className="import-stepper" aria-label="Import workflow steps">
+          {importSteps.map((step, index) => (
+            <li
+              key={step.label}
+              className={[
+                "import-step",
+                step.complete ? "complete" : "",
+                step.active ? "active" : "",
+              ].filter(Boolean).join(" ")}
+            >
+              <span className="import-step-number">{index + 1}</span>
+              <span>{step.label}</span>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+
+      <div className="upload-workspace">
+        <label
+          className="upload-dropzone"
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => {
+            event.preventDefault();
+            onFileChange(event.dataTransfer.files?.[0] || null);
+          }}
+        >
+          <input
+            className="visually-hidden-file"
+            type="file"
+            accept="application/json,.json"
+            onChange={(event) => onFileChange(event.target.files?.[0] || null)}
+          />
+          <span className="upload-dropzone-icon">JSON</span>
+          <strong>Drag & drop migration bundle (.json)</strong>
+          <span className="muted">or choose a file from your computer</span>
+          <span className="upload-dropzone-button">Choose file</span>
         </label>
-        <button type="button" className="secondary" onClick={onValidate} disabled={!fileName}>
-          Validate bundle
-        </button>
-        <span className="muted">{fileName || "No file selected"}</span>
+
+        <div className="selected-file-card">
+          <span className="muted">Selected file</span>
+          <strong>{fileName || "No file selected"}</strong>
+          <button type="button" className="secondary" onClick={onValidate} disabled={!fileName}>
+            Validate bundle
+          </button>
+        </div>
       </div>
 
       {validation.message ? (
