@@ -86,4 +86,35 @@ describe("reference mapping", () => {
     expect(rewritten.payload.actions[0].value[0]).toBe("target-wh-9");
     expect(rewritten.payload.actions[0].value[1]).toBe('{ "ticket": { "comment": { "body":"Reopened", "public": false } } }');
   });
+
+  it("rewrites Help Center category and section references to target ids", () => {
+    const mapper = new ReferenceMapper(
+      bundleWith({
+        [MigrationObjectType.HELP_CENTER_CATEGORIES]: [{ metadata: { source_id: 101 }, payload: { name: "Help and FAQs" } }],
+        [MigrationObjectType.HELP_CENTER_SECTIONS]: [
+          { metadata: { source_id: 202, source_category_id: 101 }, payload: { category_id: 101, name: "Getting started" } },
+        ],
+      }),
+    );
+
+    mapper.registerObjectResult(
+      MigrationObjectType.HELP_CENTER_CATEGORIES,
+      { metadata: { source_id: 101 }, payload: { name: "Help and FAQs" } },
+      { id: 901, name: "Help and FAQs" },
+    );
+    mapper.registerObjectResult(
+      MigrationObjectType.HELP_CENTER_SECTIONS,
+      { metadata: { source_id: 202, source_category_id: 101 }, payload: { category_id: 101, name: "Getting started" } },
+      { id: 902, category_id: 901, name: "Getting started" },
+    );
+
+    const rewritten = mapper.rewritePayload({
+      category_id: 101,
+      section_id: 202,
+    });
+
+    expect(rewritten.missing).toEqual([]);
+    expect(rewritten.payload.category_id).toBe(901);
+    expect(rewritten.payload.section_id).toBe(902);
+  });
 });

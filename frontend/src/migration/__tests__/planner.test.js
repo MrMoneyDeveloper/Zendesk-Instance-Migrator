@@ -101,6 +101,40 @@ describe("dry-run plan generation", () => {
     expect(plan.blocked[0].reason).toContain("referenced dependency is missing");
   });
 
+  it("maps auto-included groups before planning dependent view conditions", async () => {
+    const group = { metadata: { source_id: 44, required_dependency: true }, payload: { name: "VIP Support" } };
+    const view = {
+      metadata: { source_id: 10 },
+      payload: {
+        title: "VIP Group View",
+        conditions: { all: [{ field: "group_id", operator: "is", value: 44 }], any: [] },
+      },
+    };
+
+    const plan = await buildDryRunPlan({
+      api: apiWithCollections({
+        "/api/v2/groups.json": { groups: [{ id: 4400, name: "VIP Support" }] },
+        "/api/v2/views.json": { views: [] },
+      }),
+      startupState: { context: { subdomain: "target" } },
+      bundle: bundle(
+        {
+          [MigrationObjectType.GROUPS]: [group],
+          [MigrationObjectType.VIEWS]: [view],
+        },
+        {
+          [MigrationObjectType.GROUPS]: true,
+          [MigrationObjectType.VIEWS]: true,
+        },
+      ),
+    });
+
+    const viewItem = plan.items.find((item) => item.object_type === MigrationObjectType.VIEWS);
+    expect(plan.summary.fail).toBe(0);
+    expect(viewItem.action).toBe("CREATE");
+    expect(viewItem.reason).not.toContain("group_id");
+  });
+
   it("applies webhook dependency policy for rules using notification_webhook", async () => {
     const baseBundle = bundle(
       {
@@ -241,5 +275,139 @@ describe("dry-run plan generation", () => {
     expect(plan.summary.create).toBe(1);
     expect(plan.summary.skip).toBe(1);
     expect(plan.summary.fail).toBe(0);
+  });
+
+  it("plans Help Center categories, sections, and articles in hierarchy order with parent matching", async () => {
+    const sourceCategory = { metadata: { source_id: 101 }, payload: { name: "Help and FAQs", locale: "en-us" } };
+    const sourceSection = {
+      metadata: { source_id: 202, source_category_id: 101 },
+      payload: { category_id: 101, name: "Getting started", locale: "en-us" },
+    };
+    const sourceArticle = {
+      metadata: { source_id: 303, source_section_id: 202 },
+      payload: { section_id: 202, title: "How to start", body: "<p>Start here</p>", locale: "en-us" },
+    };
+
+    const plan = await buildDryRunPlan({
+      api: apiWithCollections({
+        "/api/v2/help_center/categories.json": {
+          categories: [{ id: 901, name: "Help and FAQs", locale: "en-us" }],
+        },
+        "/api/v2/help_center/sections.json": {
+          sections: [{ id: 902, category_id: 901, name: "Getting started", locale: "en-us" }],
+        },
+        "/api/v2/help_center/articles.json": {
+          articles: [{ id: 903, section_id: 902, title: "How to start", locale: "en-us" }],
+        },
+      }),
+      startupState: { context: { subdomain: "target" } },
+      options: { overwriteExisting: true },
+      bundle: bundle(
+        {
+          [MigrationObjectType.HELP_CENTER_CATEGORIES]: [sourceCategory],
+          [MigrationObjectType.HELP_CENTER_SECTIONS]: [sourceSection],
+          [MigrationObjectType.HELP_CENTER_ARTICLES]: [sourceArticle],
+        },
+        {
+          [MigrationObjectType.HELP_CENTER_CATEGORIES]: true,
+          [MigrationObjectType.HELP_CENTER_SECTIONS]: true,
+          [MigrationObjectType.HELP_CENTER_ARTICLES]: true,
+        },
+      ),
+    });
+
+    expect(plan.items.map((item) => item.object_type)).toEqual([
+      MigrationObjectType.HELP_CENTER_CATEGORIES,
+      MigrationObjectType.HELP_CENTER_SECTIONS,
+      MigrationObjectType.HELP_CENTER_ARTICLES,
+    ]);
+    expect(plan.items.map((item) => item.action)).toEqual(["UPDATE", "UPDATE", "UPDATE"]);
+    expect(plan.items.map((item) => item.target_id)).toEqual([901, 902, 903]);
+  });
+
+  it("plans Help Center hierarchy for create without requiring target URLs", async () => {
+    const sourceCategory = { metadata: { source_id: 101 }, payload: { name: "Help and FAQs", locale: "en-us" } };
+    const sourceSection = {
+      metadata: { source_id: 202, source_category_id: 101 },
+      payload: { category_id: 101, name: "Getting started", locale: "en-us" },
+    };
+    const sourceArticle = {
+      metadata: { source_id: 303, source_section_id: 202 },
+      payload: { section_id: 202, title: "How to start", body: "<p>Start here</p>", locale: "en-us" },
+    };
+
+    const plan = await buildDryRunPlan({
+      api: apiWithCollections({
+        "/api/v2/help_center/categories.json": { categories: [] },
+        "/api/v2/help_center/sections.json": { sections: [] },
+        "/api/v2/help_center/articles.json": { articles: [] },
+      }),
+      startupState: { context: { subdomain: "target" } },
+      bundle: bundle(
+        {
+          [MigrationObjectType.HELP_CENTER_CATEGORIES]: [sourceCategory],
+          [MigrationObjectType.HELP_CENTER_SECTIONS]: [sourceSection],
+          [MigrationObjectType.HELP_CENTER_ARTICLES]: [sourceArticle],
+        },
+        {
+          [MigrationObjectType.HELP_CENTER_CATEGORIES]: true,
+          [MigrationObjectType.HELP_CENTER_SECTIONS]: true,
+          [MigrationObjectType.HELP_CENTER_ARTICLES]: true,
+        },
+      ),
+    });
+
+    expect(plan.summary.create).toBe(3);
+    expect(plan.summary.fail).toBe(0);
+    expect(plan.items.map((item) => item.action)).toEqual(["CREATE", "CREATE", "CREATE"]);
+  });
+
+  it("skips ambiguous Help Center matches instead of choosing the wrong parent", async () => {
+    const sourceCategory = { metadata: { source_id: 101 }, payload: { name: "Help and FAQs", locale: "en-us" } };
+
+    const plan = await buildDryRunPlan({
+      api: apiWithCollections({
+        "/api/v2/help_center/categories.json": {
+          categories: [
+            { id: 901, name: "Help and FAQs", locale: "en-us" },
+            { id: 902, name: "Help and FAQs", locale: "en-us" },
+          ],
+        },
+      }),
+      startupState: { context: { subdomain: "target" } },
+      bundle: bundle(
+        {
+          [MigrationObjectType.HELP_CENTER_CATEGORIES]: [sourceCategory],
+        },
+        { [MigrationObjectType.HELP_CENTER_CATEGORIES]: true },
+      ),
+    });
+
+    expect(plan.summary.skip).toBe(1);
+    expect(plan.items[0].reason).toContain("multiple matching Help Center items");
+  });
+
+  it("fails a Help Center section when its category is not in the bundle or target mapping", async () => {
+    const plan = await buildDryRunPlan({
+      api: apiWithCollections({
+        "/api/v2/help_center/sections.json": { sections: [] },
+      }),
+      startupState: { context: { subdomain: "target" } },
+      bundle: bundle(
+        {
+          [MigrationObjectType.HELP_CENTER_SECTIONS]: [
+            {
+              metadata: { source_id: 202, source_category_id: 999 },
+              payload: { category_id: 999, name: "Orphan section", locale: "en-us" },
+            },
+          ],
+        },
+        { [MigrationObjectType.HELP_CENTER_SECTIONS]: true },
+      ),
+    });
+
+    expect(plan.summary.fail).toBe(1);
+    expect(plan.blocked[0].reason).toContain("referenced dependency is missing");
+    expect(plan.blocked[0].reason).toContain("category_id 999");
   });
 });

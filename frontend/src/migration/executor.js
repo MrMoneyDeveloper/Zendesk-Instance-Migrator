@@ -42,11 +42,25 @@ function findTargetById(targetState, type, targetId) {
   return targetItemsForType(targetState, type).find((item) => String(item.id ?? item.key ?? item.name ?? "") === id);
 }
 
-function createOrUpdatePath(endpoint, action, planItem) {
+function createOrUpdatePath(endpoint, action, planItem, payload = {}) {
   const item = planItem.source_item;
   const objectKey = item?.metadata?.object_key || item?.payload?.object_key;
 
   if (action === "CREATE") {
+    if (planItem.object_type === MigrationObjectType.HELP_CENTER_SECTIONS) {
+      const categoryId = payload?.category_id;
+      if (categoryId === undefined || categoryId === null || categoryId === "") {
+        throw new Error(`${planItem.display_name} cannot be created because no target Help Center category was resolved.`);
+      }
+      return endpoint.createPath(categoryId);
+    }
+    if (planItem.object_type === MigrationObjectType.HELP_CENTER_ARTICLES) {
+      const sectionId = payload?.section_id;
+      if (sectionId === undefined || sectionId === null || sectionId === "") {
+        throw new Error(`${planItem.display_name} cannot be created because no target Help Center section was resolved.`);
+      }
+      return endpoint.createPath(sectionId);
+    }
     return typeof endpoint.createPath === "function" ? endpoint.createPath(objectKey) : endpoint.createPath;
   }
 
@@ -156,6 +170,12 @@ function prepareTicketPayloadForImport(payload, mapper, sourcePayload = {}, { pr
     });
   }
 
+  const satisfactionScore = String(next.satisfaction_rating?.score || "").trim().toLowerCase();
+  if (next.satisfaction_rating && !["good", "bad"].includes(satisfactionScore)) {
+    delete next.satisfaction_rating;
+    warnings.push("Removed satisfaction rating because Zendesk ticket import only accepts good or bad scores.");
+  }
+
   return { payload: next, warnings: [...new Set(warnings)] };
 }
 
@@ -253,10 +273,16 @@ export async function executeImport({ api, bundle, plan, startupState, onProgres
     if (existingTarget) mapper.registerObjectResult(item.object_type, item.source_item, existingTarget);
   }
 
-  for (const item of orderedItems) {
+  const totalItems = orderedItems.length;
+
+  for (const [index, item] of orderedItems.entries()) {
+    const currentIndex = index + 1;
     onProgress?.({
       currentObjectType: item.object_type,
       currentItem: item.display_name,
+      currentIndex,
+      totalItems,
+      percentComplete: totalItems > 0 ? Math.round((currentIndex / totalItems) * 100) : 0,
       message: `${item.action}: ${item.display_name}`,
     });
 
@@ -397,10 +423,17 @@ export async function executeImport({ api, bundle, plan, startupState, onProgres
         rewrite.payload = prepared.payload;
         item.warnings = [...(item.warnings || []), ...prepared.warnings];
       }
+      if (
+        item.object_type === MigrationObjectType.HELP_CENTER_CATEGORIES &&
+        item.action === "CREATE" &&
+        plan.options?.helpCenterTargetBrandId
+      ) {
+        rewrite.payload.brand_id = plan.options.helpCenterTargetBrandId;
+      }
       if (item.auto_mutation_applied === "imported_inactive_due_to_unmapped_webhook") {
         rewrite.payload.active = false;
       }
-      const path = createOrUpdatePath(endpoint, item.action, item);
+      const path = createOrUpdatePath(endpoint, item.action, item, rewrite.payload);
       const { data } = await api.request({
         path,
         method: item.action === "CREATE" ? "POST" : "PUT",

@@ -17,14 +17,20 @@ export default function DryRunSummary({ plan, confirmed, onConfirmChange, onExec
           <h2>Dry-run summary</h2>
           <p className="muted">Target instance: {plan.target?.subdomain || "current instance"}</p>
         </div>
-        <button
-          type="button"
-          className="primary"
-          onClick={onExecute}
-          disabled={!confirmed || executing || plan.items.length === 0 || executeDisabled}
-        >
-          {executing ? "Executing import" : "Execute import"}
-        </button>
+        <div className="dry-run-actions">
+          <label className="check-row confirm-row">
+            <input type="checkbox" checked={confirmed} onChange={(event) => onConfirmChange(event.target.checked)} />
+            <span>I understand this will modify the current Zendesk instance.</span>
+          </label>
+          <button
+            type="button"
+            className="primary"
+            onClick={onExecute}
+            disabled={!confirmed || executing || plan.items.length === 0 || executeDisabled}
+          >
+            {executing ? "Executing import" : "Execute import"}
+          </button>
+        </div>
       </div>
       {executeDisabledReason ? <div className="notice warning">{executeDisabledReason}</div> : null}
 
@@ -86,11 +92,6 @@ export default function DryRunSummary({ plan, confirmed, onConfirmChange, onExec
           </ul>
         </section>
       ) : null}
-
-      <label className="check-row confirm-row">
-        <input type="checkbox" checked={confirmed} onChange={(event) => onConfirmChange(event.target.checked)} />
-        <span>I understand this will modify the current Zendesk instance.</span>
-      </label>
     </section>
   );
 }

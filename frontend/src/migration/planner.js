@@ -1,9 +1,9 @@
 import { assertValidBundle } from "./bundleValidator";
 import { getEndpoint } from "./endpoints";
 import { readTargetState } from "./importService";
-import { displayNameFor, findMatch, stableKeyFor } from "./matchers";
+import { displayNameFor, findMatch, findMatches, stableKeyFor } from "./matchers";
 import { MIGRATION_OBJECT_ORDER, MigrationObjectType } from "./objectTypes";
-import { createReferenceMapper } from "./referenceMapper";
+import { createReferenceMapper, REF_TYPES } from "./referenceMapper";
 import { classifyPlanItemPortability } from "./portability";
 import { validateBusinessRulePayload } from "./compatibility";
 
@@ -67,6 +67,7 @@ function optionsWithDefaults(options = {}) {
     webhookDependencyPolicy: options.webhookDependencyPolicy || "manual_required",
     webhookMapping: options.webhookMapping && typeof options.webhookMapping === "object" ? options.webhookMapping : {},
     webhookAuthConfigured: Boolean(options.webhookAuthConfigured),
+    helpCenterTargetBrandId: String(options.helpCenterTargetBrandId || "").trim(),
     ticketImportDateRange: {
       from: String(options.ticketImportDateRange?.from || "").trim(),
       to: String(options.ticketImportDateRange?.to || "").trim(),
@@ -96,6 +97,164 @@ function ticketOutsideImportRange(item, ticketImportDateRange) {
   if (from && createdAt < from) return true;
   if (to && createdAt > to) return true;
   return false;
+}
+
+function normalizedName(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function itemSourceId(item) {
+  return item?.metadata?.source_id ?? item?.payload?.id;
+}
+
+function displayTitle(item) {
+  return item?.payload?.name || item?.payload?.title || item?.name || item?.title || "";
+}
+
+function helpCenterHierarchyContext(bundle, targetState) {
+  const sourceCategoriesById = new Map();
+  const sourceSectionsById = new Map();
+  const targetCategoriesById = new Map();
+  const targetSectionsById = new Map();
+
+  for (const item of bundle?.objects?.[MigrationObjectType.HELP_CENTER_CATEGORIES] || []) {
+    const sourceId = itemSourceId(item);
+    if (sourceId !== undefined && sourceId !== null) {
+      sourceCategoriesById.set(String(sourceId), item);
+    }
+  }
+
+  for (const item of bundle?.objects?.[MigrationObjectType.HELP_CENTER_SECTIONS] || []) {
+    const sourceId = itemSourceId(item);
+    if (sourceId !== undefined && sourceId !== null) {
+      sourceSectionsById.set(String(sourceId), item);
+    }
+  }
+
+  for (const category of targetState?.[MigrationObjectType.HELP_CENTER_CATEGORIES] || []) {
+    if (category?.id !== undefined && category?.id !== null) {
+      targetCategoriesById.set(String(category.id), category);
+    }
+  }
+
+  for (const section of targetState?.[MigrationObjectType.HELP_CENTER_SECTIONS] || []) {
+    if (section?.id !== undefined && section?.id !== null) {
+      targetSectionsById.set(String(section.id), section);
+    }
+  }
+
+  return {
+    sourceCategoryName(sourceCategoryId) {
+      return displayTitle(sourceCategoriesById.get(String(sourceCategoryId)));
+    },
+    sourceSectionPath(sourceSectionId) {
+      const section = sourceSectionsById.get(String(sourceSectionId));
+      if (!section) return "";
+      const sourceCategoryId = section?.payload?.category_id ?? section?.metadata?.source_category_id;
+      return [this.sourceCategoryName(sourceCategoryId), displayTitle(section)].map(normalizedName).filter(Boolean).join("|");
+    },
+    targetCategoryName(targetCategoryId) {
+      const category = targetCategoriesById.get(String(targetCategoryId));
+      return category?.name || category?.title || "";
+    },
+    targetSectionPath(targetSectionId) {
+      const section = targetSectionsById.get(String(targetSectionId));
+      if (!section) return "";
+      return [this.targetCategoryName(section.category_id), section.name || section.title].map(normalizedName).filter(Boolean).join("|");
+    },
+    enrichTargetItems(type, items, targetBrandId = "") {
+      if (type === MigrationObjectType.HELP_CENTER_CATEGORIES) {
+        const brandId = String(targetBrandId || "").trim();
+        return brandId ? items.filter((item) => String(item?.brand_id || "") === brandId) : items;
+      }
+      if (type === MigrationObjectType.HELP_CENTER_SECTIONS) {
+        return items.map((item) => ({ ...item, match_category_name: this.targetCategoryName(item?.category_id) }));
+      }
+      if (type === MigrationObjectType.HELP_CENTER_ARTICLES) {
+        return items.map((item) => ({ ...item, match_section_path: this.targetSectionPath(item?.section_id) }));
+      }
+      return items;
+    },
+  };
+}
+
+function matchingItemFor(type, item, mapper, hierarchyContext) {
+  if (type === MigrationObjectType.HELP_CENTER_SECTIONS) {
+    const sourceCategoryId = item?.payload?.category_id ?? item?.metadata?.source_category_id;
+    const mappedCategoryId = mapper.lookup(REF_TYPES.HELP_CENTER_CATEGORY, sourceCategoryId);
+    return {
+      ...item,
+      metadata: {
+        ...(item.metadata || {}),
+        ...(mappedCategoryId !== undefined ? { match_category_id: mappedCategoryId } : {}),
+        match_category_name: hierarchyContext.sourceCategoryName(sourceCategoryId),
+      },
+    };
+  }
+
+  if (type === MigrationObjectType.HELP_CENTER_ARTICLES) {
+    const sourceSectionId = item?.payload?.section_id ?? item?.metadata?.source_section_id;
+    const mappedSectionId = mapper.lookup(REF_TYPES.HELP_CENTER_SECTION, sourceSectionId);
+    return {
+      ...item,
+      metadata: {
+        ...(item.metadata || {}),
+        ...(mappedSectionId !== undefined ? { match_section_id: mappedSectionId } : {}),
+        match_section_path: hierarchyContext.sourceSectionPath(sourceSectionId),
+      },
+    };
+  }
+
+  return item;
+}
+
+function missingReferencesForPlan(type, item, mapper, missing) {
+  if (type === MigrationObjectType.HELP_CENTER_SECTIONS || type === MigrationObjectType.HELP_CENTER_ARTICLES) {
+    const filtered = missing.filter((ref) => ref.type !== REF_TYPES.HELP_CENTER_CATEGORY && ref.type !== REF_TYPES.HELP_CENTER_SECTION);
+    if (type === MigrationObjectType.HELP_CENTER_SECTIONS) {
+      const sourceCategoryId = item?.payload?.category_id ?? item?.metadata?.source_category_id;
+      if (
+        sourceCategoryId !== undefined &&
+        sourceCategoryId !== null &&
+        mapper.lookup(REF_TYPES.HELP_CENTER_CATEGORY, sourceCategoryId) === undefined &&
+        !mapper.hasKnownSource(REF_TYPES.HELP_CENTER_CATEGORY, sourceCategoryId)
+      ) {
+        filtered.push({ type: REF_TYPES.HELP_CENTER_CATEGORY, value: sourceCategoryId, label: "category_id" });
+      }
+    }
+    if (type === MigrationObjectType.HELP_CENTER_ARTICLES) {
+      const sourceSectionId = item?.payload?.section_id ?? item?.metadata?.source_section_id;
+      if (
+        sourceSectionId !== undefined &&
+        sourceSectionId !== null &&
+        mapper.lookup(REF_TYPES.HELP_CENTER_SECTION, sourceSectionId) === undefined &&
+        !mapper.hasKnownSource(REF_TYPES.HELP_CENTER_SECTION, sourceSectionId)
+      ) {
+        filtered.push({ type: REF_TYPES.HELP_CENTER_SECTION, value: sourceSectionId, label: "section_id" });
+      }
+    }
+    return filtered;
+  }
+  return missing;
+}
+
+function isHelpCenterType(type) {
+  return (
+    type === MigrationObjectType.HELP_CENTER_CATEGORIES ||
+    type === MigrationObjectType.HELP_CENTER_SECTIONS ||
+    type === MigrationObjectType.HELP_CENTER_ARTICLES
+  );
+}
+
+function findTargetMatch(type, item, targetItems) {
+  if (!isHelpCenterType(type)) {
+    return { match: findMatch(type, item, targetItems), ambiguous: false };
+  }
+  const matches = findMatches(type, item, targetItems);
+  return {
+    match: matches.length === 1 ? matches[0] : null,
+    ambiguous: matches.length > 1,
+  };
 }
 
 function sourceWebhookKeys(bundle) {
@@ -129,6 +288,7 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
   const { state: targetState, unsupported } = await readTargetState({ api, bundle, scope });
   const unsupportedByType = new Map(unsupported.map((entry) => [entry.object_type, entry]));
   const mapper = createReferenceMapper(bundle);
+  const hierarchyContext = helpCenterHierarchyContext(bundle, targetState);
   const knownSourceWebhookKeys = sourceWebhookKeys(bundle);
   const summary = emptySummary();
   const items = [];
@@ -142,12 +302,12 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
 
   for (const type of MIGRATION_OBJECT_ORDER) {
     const sourceItems = bundle.objects?.[type] || [];
-    const targetItems = targetState[type] || [];
+    const targetItems = hierarchyContext.enrichTargetItems(type, targetState[type] || [], importOptions.helpCenterTargetBrandId);
     const unsupportedEntry = unsupportedByType.get(type);
 
     for (const [index, item] of sourceItems.entries()) {
       const dependencies = mapper.collectReferences(item.payload || {});
-      const missing = mapper.findMissingReferences(item.payload || {});
+      const missing = missingReferencesForPlan(type, item, mapper, mapper.findMissingReferences(item.payload || {}));
       const webhookRefs = webhookRefsForPayload(mapper, item.payload || {});
       const unresolvedWebhook = unresolvedWebhookRefs(webhookRefs, knownSourceWebhookKeys, importOptions.webhookMapping);
       const itemWarnings = [...(item.warnings || [])];
@@ -158,6 +318,7 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
       const isTicket = type === MigrationObjectType.TICKETS;
       const ticketExternalId = String(item?.payload?.external_id || "").trim().toLowerCase();
       let match = null;
+      let ambiguousHelpCenterMatch = false;
       let action = "CREATE";
       let reason = "No matching target item found.";
 
@@ -169,10 +330,15 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
         action = unsupportedAction.action;
         reason = unsupportedAction.reason;
       } else if (!portability.portable) {
-        match = findMatch(type, item, targetItems);
+        const matchResult = findTargetMatch(type, matchingItemFor(type, item, mapper, hierarchyContext), targetItems);
+        match = matchResult.match;
+        ambiguousHelpCenterMatch = matchResult.ambiguous;
         if (match) mapper.registerObjectResult(type, item, match);
         action = "REFERENCE_ONLY";
         reason = portability.reason;
+      } else if (ambiguousHelpCenterMatch) {
+        action = "SKIP";
+        reason = "Skipped because multiple matching Help Center items were found by name. Rename duplicates or choose a clearer destination before importing.";
       } else if (!importOptions.includeInactive && item.active === false) {
         action = "SKIP";
         reason = "Inactive item excluded by import option.";
@@ -205,7 +371,13 @@ export async function buildDryRunPlan({ api, bundle, startupState, options = {} 
         action = "FAIL";
         reason = `Blocked because a referenced dependency is missing: ${missing.map((ref) => `${ref.label} ${ref.value}`).join(", ")}.`;
       } else {
-        match = findMatch(type, item, targetItems);
+        const matchResult = findTargetMatch(type, matchingItemFor(type, item, mapper, hierarchyContext), targetItems);
+        match = matchResult.match;
+        ambiguousHelpCenterMatch = matchResult.ambiguous;
+        if (ambiguousHelpCenterMatch) {
+          action = "SKIP";
+          reason = "Skipped because multiple matching Help Center items were found by name. Rename duplicates or choose a clearer destination before importing.";
+        }
         if (match) {
           mapper.registerObjectResult(type, item, match);
           if (type === MigrationObjectType.TICKETS) {

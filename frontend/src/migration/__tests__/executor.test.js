@@ -252,6 +252,172 @@ describe("executor", () => {
     expect(report.created_items[0]).toMatchObject({ display_name: "Original issue", target_id: 9901, status: "created_with_warnings" });
   });
 
+  it("omits unsupported satisfaction rating scores from ticket imports", async () => {
+    const calls = [];
+    const api = createCurrentInstanceApi({
+      client: {
+        request: async ({ url, type, data }) => {
+          const body = JSON.parse(data);
+          calls.push({ path: url, method: type, body });
+          return { responseJSON: { ticket: { id: 9905, external_id: body.ticket.external_id, subject: body.ticket.subject } } };
+        },
+      },
+    });
+
+    const sourceItem = {
+      metadata: { source_id: 325 },
+      payload: {
+        external_id: "zendesk-migration:source:ticket:325",
+        subject: "Ticket with offered satisfaction rating",
+        satisfaction_rating: { score: "offered" },
+        comments: [{ body: "Customer message", public: true }],
+      },
+    };
+    const plan = {
+      plan_id: "plan-ticket-satisfaction",
+      target: { subdomain: "target" },
+      options: { continueOnError: true },
+      target_state: { [MigrationObjectType.TICKETS]: [] },
+      items: [
+        {
+          object_type: MigrationObjectType.TICKETS,
+          display_name: "Ticket with offered satisfaction rating",
+          action: "CREATE",
+          source_item: sourceItem,
+          warnings: [],
+        },
+      ],
+    };
+
+    const report = await executeImport({
+      api,
+      plan,
+      startupState: { context: { subdomain: "target" } },
+      bundle: {
+        bundle_version: BUNDLE_VERSION,
+        source: { subdomain: "source" },
+        objects: objectsWith({ [MigrationObjectType.TICKETS]: [sourceItem] }),
+        metadata: {},
+      },
+    });
+
+    expect(calls[0].body.ticket.satisfaction_rating).toBeUndefined();
+    expect(report.created_items[0]).toMatchObject({
+      display_name: "Ticket with offered satisfaction rating",
+      status: "created_with_warnings",
+      warnings: ["Removed satisfaction rating because Zendesk ticket import only accepts good or bad scores."],
+    });
+  });
+
+  it("imports Help Center hierarchy through mapped category and section paths", async () => {
+    const calls = [];
+    const api = createCurrentInstanceApi({
+      client: {
+        request: async ({ url, type, data }) => {
+          const body = JSON.parse(data);
+          calls.push({ path: url, method: type, body });
+          if (url === "/api/v2/help_center/categories.json") {
+            return { responseJSON: { category: { id: 901, name: body.category.name } } };
+          }
+          if (url === "/api/v2/help_center/categories/901/sections.json") {
+            return { responseJSON: { section: { id: 902, category_id: 901, name: body.section.name } } };
+          }
+          if (url === "/api/v2/help_center/sections/902/articles.json") {
+            return { responseJSON: { article: { id: 903, section_id: 902, title: body.article.title } } };
+          }
+          return { responseJSON: {} };
+        },
+      },
+    });
+
+    const category = { metadata: { source_id: 101 }, payload: { name: "Help and FAQs", locale: "en-us" } };
+    const section = {
+      metadata: { source_id: 202, source_category_id: 101 },
+      payload: { category_id: 101, name: "Getting started", locale: "en-us" },
+    };
+    const article = {
+      metadata: { source_id: 303, source_section_id: 202 },
+      payload: { section_id: 202, title: "How to start", body: "<p>Start here</p>", locale: "en-us" },
+    };
+
+    const report = await executeImport({
+      api,
+      plan: {
+        plan_id: "plan-help-center",
+        target: { subdomain: "target" },
+        options: { continueOnError: true },
+        target_state: {},
+        items: [
+          { object_type: MigrationObjectType.HELP_CENTER_CATEGORIES, display_name: "Help and FAQs", action: "CREATE", source_item: category, warnings: [] },
+          { object_type: MigrationObjectType.HELP_CENTER_SECTIONS, display_name: "Getting started", action: "CREATE", source_item: section, warnings: [] },
+          { object_type: MigrationObjectType.HELP_CENTER_ARTICLES, display_name: "How to start", action: "CREATE", source_item: article, warnings: [] },
+        ],
+      },
+      startupState: { context: { subdomain: "target" } },
+      bundle: {
+        bundle_version: BUNDLE_VERSION,
+        source: { subdomain: "source" },
+        objects: objectsWith({
+          [MigrationObjectType.HELP_CENTER_CATEGORIES]: [category],
+          [MigrationObjectType.HELP_CENTER_SECTIONS]: [section],
+          [MigrationObjectType.HELP_CENTER_ARTICLES]: [article],
+        }),
+        metadata: {},
+      },
+    });
+
+    expect(calls.map((call) => call.path)).toEqual([
+      "/api/v2/help_center/categories.json",
+      "/api/v2/help_center/categories/901/sections.json",
+      "/api/v2/help_center/sections/902/articles.json",
+    ]);
+    expect(calls[1].body.section.category_id).toBe(901);
+    expect(calls[2].body.article.section_id).toBe(902);
+    expect(report.created_items.map((item) => item.target_id)).toEqual([901, 902, 903]);
+  });
+
+  it("adds selected target brand internally when creating Help Center categories", async () => {
+    const calls = [];
+    const api = createCurrentInstanceApi({
+      client: {
+        request: async ({ url, type, data }) => {
+          const body = JSON.parse(data);
+          calls.push({ path: url, method: type, body });
+          return { responseJSON: { category: { id: 901, name: body.category.name, brand_id: body.category.brand_id } } };
+        },
+      },
+    });
+
+    const category = { metadata: { source_id: 101 }, payload: { name: "Help and FAQs", locale: "en-us" } };
+
+    await executeImport({
+      api,
+      plan: {
+        plan_id: "plan-help-center-brand",
+        target: { subdomain: "target" },
+        options: { continueOnError: true, helpCenterTargetBrandId: "12345" },
+        target_state: {},
+        items: [
+          { object_type: MigrationObjectType.HELP_CENTER_CATEGORIES, display_name: "Help and FAQs", action: "CREATE", source_item: category, warnings: [] },
+        ],
+      },
+      startupState: { context: { subdomain: "target" } },
+      bundle: {
+        bundle_version: BUNDLE_VERSION,
+        source: { subdomain: "source" },
+        objects: objectsWith({
+          [MigrationObjectType.HELP_CENTER_CATEGORIES]: [category],
+        }),
+        metadata: {},
+      },
+    });
+
+    expect(calls[0]).toMatchObject({
+      path: "/api/v2/help_center/categories.json",
+      body: { category: { name: "Help and FAQs", brand_id: "12345" } },
+    });
+  });
+
   it("omits unsafe ticket references and reports created_with_warnings", async () => {
     const calls = [];
     const api = createCurrentInstanceApi({

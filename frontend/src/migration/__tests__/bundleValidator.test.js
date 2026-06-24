@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { validateBundle } from "../bundleValidator";
-import { BUNDLE_VERSION, MIGRATION_OBJECT_ORDER } from "../objectTypes";
+import { BUNDLE_VERSION, MIGRATION_OBJECT_ORDER, MigrationObjectType } from "../objectTypes";
 
 function emptyObjects() {
   return MIGRATION_OBJECT_ORDER.reduce((objects, type) => {
@@ -24,6 +24,9 @@ describe("bundle validation", () => {
 
     expect(result.valid).toBe(true);
     expect(result.summary.counts.groups).toBe(0);
+    expect(result.summary.counts[MigrationObjectType.HELP_CENTER_CATEGORIES]).toBe(0);
+    expect(result.summary.counts[MigrationObjectType.HELP_CENTER_SECTIONS]).toBe(0);
+    expect(result.summary.counts[MigrationObjectType.HELP_CENTER_ARTICLES]).toBe(0);
   });
 
   it("rejects unsupported bundle versions", () => {

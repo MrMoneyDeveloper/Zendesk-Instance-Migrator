@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import DryRunSummary from "./components/DryRunSummary";
-import ExecutionProgress from "./components/ExecutionProgress";
+import ExecutionProgress, { ExecutionStatusCard } from "./components/ExecutionProgress";
 import ExportPanel from "./components/ExportPanel";
 import ImportPanel from "./components/ImportPanel";
 import ModeSelector from "./components/ModeSelector";
@@ -30,6 +30,7 @@ const DEFAULT_IMPORT_OPTIONS = {
   webhookMappingText: "",
   fullTicketMigration: false,
   fullTicketAutoCreate: true,
+  helpCenterTargetBrandId: "",
 };
 
 const DEFAULT_TICKET_EXPORT_OPTIONS = {
@@ -43,6 +44,13 @@ const DEFAULT_TICKET_EXPORT_OPTIONS = {
     statuses: [],
     types: [],
     priorities: [],
+    brandIds: [],
+    groupIds: [],
+    assigneeIds: [],
+    requesterIds: [],
+    organizationIds: [],
+    ticketFormIds: [],
+    tags: [],
     commentMode: "all",
     customFieldFilters: [],
   },
@@ -53,6 +61,23 @@ const DEFAULT_TICKET_IMPORT_OPTIONS = {
     from: "",
     to: "",
   },
+};
+
+const EMPTY_TICKET_FILTER_OPTIONS = {
+  brands: [],
+  groups: [],
+  ticketForms: [],
+  users: [],
+  organizations: [],
+  ticketFields: [],
+  loading: false,
+  error: "",
+};
+
+const EMPTY_HELP_CENTER_DESTINATION_OPTIONS = {
+  brands: [],
+  loading: false,
+  error: "",
 };
 
 function appendLog(setter, entry) {
@@ -114,8 +139,23 @@ export function validateTicketImportOptions(bundleSummary, options) {
   return "";
 }
 
+function helpCenterItemCount(bundleSummary) {
+  return (
+    Number(bundleSummary?.counts?.help_center_categories || 0) +
+    Number(bundleSummary?.counts?.help_center_sections || 0) +
+    Number(bundleSummary?.counts?.help_center_articles || 0)
+  );
+}
+
 function App() {
   const api = useMemo(() => createCurrentInstanceApi(), []);
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem("instance-config-migrator-theme") === "dark" ? "dark" : "light";
+    } catch {
+      return "light";
+    }
+  });
   const [startup, setStartup] = useState({
     loading: true,
     error: "",
@@ -125,6 +165,7 @@ function App() {
   const [scope, setScope] = useState({ ...DEFAULT_EXPORT_SCOPE });
   const [includeInactiveExport, setIncludeInactiveExport] = useState(false);
   const [ticketExportOptions, setTicketExportOptions] = useState(DEFAULT_TICKET_EXPORT_OPTIONS);
+  const [ticketFilterOptions, setTicketFilterOptions] = useState(EMPTY_TICKET_FILTER_OPTIONS);
   const [exporting, setExporting] = useState(false);
   const [exportLogs, setExportLogs] = useState([]);
   const [bundle, setBundle] = useState(null);
@@ -133,6 +174,7 @@ function App() {
   const [uploadedBundle, setUploadedBundle] = useState(null);
   const [validation, setValidation] = useState({ valid: false, message: "", summary: null });
   const [importOptions, setImportOptions] = useState(DEFAULT_IMPORT_OPTIONS);
+  const [helpCenterDestinationOptions, setHelpCenterDestinationOptions] = useState(EMPTY_HELP_CENTER_DESTINATION_OPTIONS);
   const [ticketImportOptions, setTicketImportOptions] = useState(DEFAULT_TICKET_IMPORT_OPTIONS);
   const [dryRunRunning, setDryRunRunning] = useState(false);
   const [plan, setPlan] = useState(null);
@@ -180,6 +222,69 @@ function App() {
       active = false;
     };
   }, [api]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("instance-config-migrator-theme", theme);
+    } catch {
+      // Theme persistence is best-effort only.
+    }
+    document.body.classList.toggle("instance-migrator-dark", theme === "dark");
+    document.body.classList.toggle("instance-migrator-light", theme !== "dark");
+
+    return () => {
+      document.body.classList.remove("instance-migrator-dark", "instance-migrator-light");
+    };
+  }, [theme]);
+
+  function toggleTheme() {
+    setTheme((previous) => (previous === "dark" ? "light" : "dark"));
+  }
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadTicketFilterOptions() {
+      if (!scope.tickets) {
+        setTicketFilterOptions(EMPTY_TICKET_FILTER_OPTIONS);
+        return;
+      }
+
+      setTicketFilterOptions((previous) => ({ ...previous, loading: true, error: "" }));
+      const requests = [
+        ["brands", "/api/v2/brands.json", "brands"],
+        ["groups", "/api/v2/groups.json", "groups"],
+        ["ticketForms", "/api/v2/ticket_forms.json", "ticket_forms"],
+        ["users", "/api/v2/users.json", "users"],
+        ["organizations", "/api/v2/organizations.json", "organizations"],
+        ["ticketFields", "/api/v2/ticket_fields.json", "ticket_fields"],
+      ];
+
+      const results = await Promise.allSettled(
+        requests.map(([, path, collectionKey]) => api.fetchAll(path, collectionKey)),
+      );
+      if (!active) return;
+
+      const next = { ...EMPTY_TICKET_FILTER_OPTIONS };
+      const failed = [];
+      requests.forEach(([key, path], index) => {
+        const result = results[index];
+        if (result.status === "fulfilled") {
+          next[key] = Array.isArray(result.value) ? result.value : [];
+        } else {
+          failed.push(path);
+        }
+      });
+      next.loading = false;
+      next.error = failed.length ? "Some ticket filter options could not be loaded. You can still export with the available filters." : "";
+      setTicketFilterOptions(next);
+    }
+
+    void loadTicketFilterOptions();
+    return () => {
+      active = false;
+    };
+  }, [api, scope.tickets]);
 
   function updateScope(type, selected) {
     setScope((previous) => ({ ...previous, [type]: selected }));
@@ -292,6 +397,22 @@ function App() {
         sourceSubdomain: previous.sourceSubdomain || parsed?.source?.subdomain || "",
         email: previous.email || startup.state?.currentUser?.email || "",
       }));
+      if (result.valid && helpCenterItemCount(result.summary) > 0) {
+        setHelpCenterDestinationOptions((previous) => ({ ...previous, loading: true, error: "" }));
+        try {
+          const brands = await api.fetchAll("/api/v2/brands.json", "brands");
+          setHelpCenterDestinationOptions({ brands: Array.isArray(brands) ? brands : [], loading: false, error: "" });
+        } catch {
+          setHelpCenterDestinationOptions({
+            brands: [],
+            loading: false,
+            error: "Target brands could not be loaded. The import will use the current instance default Help Center.",
+          });
+        }
+      } else {
+        setHelpCenterDestinationOptions(EMPTY_HELP_CENTER_DESTINATION_OPTIONS);
+        setImportOptions((previous) => ({ ...previous, helpCenterTargetBrandId: "" }));
+      }
       setPlan(null);
       setConfirmed(false);
     } catch (error) {
@@ -326,6 +447,7 @@ function App() {
     setReport(null);
     setConfirmed(false);
     setExecutionLogs([]);
+    setExecutionProgress(null);
 
     try {
       const dryRunPlan = await buildDryRunPlan({
@@ -335,6 +457,7 @@ function App() {
         options: {
           ...importOptions,
           ticketImportDateRange: ticketImportOptions.ticketDateRange,
+          helpCenterTargetBrandId: importOptions.helpCenterTargetBrandId,
           webhookMapping: parseWebhookMappingText(importOptions.webhookMappingText),
           webhookAuthConfigured: Boolean(webhookSetup.targetEmail && webhookSetup.apiToken),
         },
@@ -359,6 +482,7 @@ function App() {
     }
     setExecuting(true);
     setExecutionLogs([]);
+    setExecutionProgress(null);
     setReport(null);
 
     try {
@@ -375,8 +499,10 @@ function App() {
         },
       });
       setReport(finalReport);
+      setExecutionProgress(null);
       setExecutionLogs(finalReport.logs || []);
     } catch (error) {
+      setExecutionProgress(null);
       appendLog(setExecutionLogs, error?.message || "Import execution could not complete.");
     } finally {
       setExecuting(false);
@@ -426,7 +552,7 @@ function App() {
 
   if (startup.loading) {
     return (
-      <main className="app">
+      <main className={`app theme-${theme}`}>
         <section className="panel">
           <h1>Instance Config Migrator</h1>
           <p className="muted">Checking current instance and admin access.</p>
@@ -437,7 +563,7 @@ function App() {
 
   if (startup.error) {
     return (
-      <main className="app">
+      <main className={`app theme-${theme}`}>
         <section className="panel">
           <h1>Instance Config Migrator</h1>
           <div className="notice error">{startup.error}</div>
@@ -448,7 +574,7 @@ function App() {
 
   if (!startup.state?.isAdmin) {
     return (
-      <main className="app">
+      <main className={`app theme-${theme}`}>
         <section className="panel">
           <h1>Instance Config Migrator</h1>
           <div className="notice error">
@@ -460,7 +586,7 @@ function App() {
   }
 
   return (
-    <main className="app">
+    <main className={`app theme-${theme}`}>
       <header className="app-header">
         <div>
           <h1>Instance Config Migrator</h1>
@@ -469,6 +595,9 @@ function App() {
             {startup.state.currentUser?.email || "current admin"}.
           </p>
         </div>
+        <button type="button" className="theme-toggle" onClick={toggleTheme}>
+          {theme === "dark" ? "Light mode" : "Dark mode"}
+        </button>
       </header>
 
       {popup ? (
@@ -493,6 +622,7 @@ function App() {
           scope={scope}
           includeInactive={includeInactiveExport}
           ticketExportOptions={ticketExportOptions}
+          ticketFilterOptions={ticketFilterOptions}
           onScopeChange={updateScope}
           onIncludeInactiveChange={setIncludeInactiveExport}
           onTicketDateRangeChange={updateTicketDateRange}
@@ -504,57 +634,62 @@ function App() {
           onDownloadBundle={downloadBundle}
         />
       ) : (
-        <>
-          <ImportPanel
-            fileName={selectedFile?.name || ""}
-            validation={validation}
-            bundleSummary={validation.summary}
-            options={importOptions}
-            ticketImportOptions={ticketImportOptions}
-            fullTicketSetup={fullTicketSetup}
-            onFileChange={handleFileChange}
-            onValidate={validateUploadedBundle}
-            onOptionChange={updateImportOption}
-            onTicketImportDateRangeChange={updateTicketImportDateRange}
-            onFullTicketSetupChange={(key, value) => setFullTicketSetup((previous) => ({ ...previous, [key]: value }))}
-            onDryRun={runDryRun}
-            dryRunRunning={dryRunRunning}
-          />
-          <WebhookBasicAuthSetup
-            required={requiresWebhookSetup}
-            targetEmail={webhookSetup.targetEmail}
-            apiToken={webhookSetup.apiToken}
-            onTargetEmailChange={(value) => setWebhookSetup((previous) => ({ ...previous, targetEmail: value }))}
-            onApiTokenChange={(value) => setWebhookSetup((previous) => ({ ...previous, apiToken: value }))}
-            targetSubdomain={targetSubdomain}
-            webhooks={webhookPreview}
-            dependentTriggers={dependentTriggers}
-            dependentAutomations={dependentAutomations}
-            endpointOverrides={webhookSetup.endpointOverrides}
-            onEndpointOverrideChange={(key, value) =>
-              setWebhookSetup((previous) => ({
-                ...previous,
-                endpointOverrides: { ...previous.endpointOverrides, [key]: value },
-              }))
-            }
-          />
-          <DryRunSummary
-            plan={plan}
-            confirmed={confirmed}
-            onConfirmChange={setConfirmed}
-            onExecute={executeConfirmedImport}
-            executing={executing}
-            executeDisabled={Boolean(executeBlockedReason)}
-            executeDisabledReason={executeBlockedReason}
-          />
-          <ExecutionProgress
-            progress={executionProgress}
-            logs={executionLogs}
-            report={report}
-            onDownloadJson={() => downloadReportJson(report)}
-            onDownloadCsv={() => downloadReportCsv(report)}
-          />
-        </>
+        <div className="import-dashboard">
+          <div className="import-main-flow">
+            <ImportPanel
+              fileName={selectedFile?.name || ""}
+              validation={validation}
+              bundleSummary={validation.summary}
+              options={importOptions}
+              helpCenterDestinationOptions={helpCenterDestinationOptions}
+              ticketImportOptions={ticketImportOptions}
+              fullTicketSetup={fullTicketSetup}
+              onFileChange={handleFileChange}
+              onValidate={validateUploadedBundle}
+              onOptionChange={updateImportOption}
+              onTicketImportDateRangeChange={updateTicketImportDateRange}
+              onFullTicketSetupChange={(key, value) => setFullTicketSetup((previous) => ({ ...previous, [key]: value }))}
+              onDryRun={runDryRun}
+              dryRunRunning={dryRunRunning}
+            />
+            <WebhookBasicAuthSetup
+              required={requiresWebhookSetup}
+              targetEmail={webhookSetup.targetEmail}
+              apiToken={webhookSetup.apiToken}
+              onTargetEmailChange={(value) => setWebhookSetup((previous) => ({ ...previous, targetEmail: value }))}
+              onApiTokenChange={(value) => setWebhookSetup((previous) => ({ ...previous, apiToken: value }))}
+              targetSubdomain={targetSubdomain}
+              webhooks={webhookPreview}
+              dependentTriggers={dependentTriggers}
+              dependentAutomations={dependentAutomations}
+              endpointOverrides={webhookSetup.endpointOverrides}
+              onEndpointOverrideChange={(key, value) =>
+                setWebhookSetup((previous) => ({
+                  ...previous,
+                  endpointOverrides: { ...previous.endpointOverrides, [key]: value },
+                }))
+              }
+            />
+            <DryRunSummary
+              plan={plan}
+              confirmed={confirmed}
+              onConfirmChange={setConfirmed}
+              onExecute={executeConfirmedImport}
+              executing={executing}
+              executeDisabled={Boolean(executeBlockedReason)}
+              executeDisabledReason={executeBlockedReason}
+            />
+            <ExecutionProgress
+              progress={executionProgress}
+              logs={executionLogs}
+              report={report}
+              onDownloadJson={() => downloadReportJson(report)}
+              onDownloadCsv={() => downloadReportCsv(report)}
+              showStatus={false}
+            />
+          </div>
+          <ExecutionStatusCard progress={executionProgress} logs={executionLogs} report={report} />
+        </div>
       )}
     </main>
   );

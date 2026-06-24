@@ -5,6 +5,7 @@ export default function ImportPanel({
   validation,
   bundleSummary,
   options,
+  helpCenterDestinationOptions,
   ticketImportOptions,
   fullTicketSetup,
   onFileChange,
@@ -16,6 +17,11 @@ export default function ImportPanel({
   dryRunRunning,
 }) {
   const ticketCount = Number(bundleSummary?.counts?.tickets || 0);
+  const helpCenterCount =
+    Number(bundleSummary?.counts?.help_center_categories || 0) +
+    Number(bundleSummary?.counts?.help_center_sections || 0) +
+    Number(bundleSummary?.counts?.help_center_articles || 0);
+  const brands = Array.isArray(helpCenterDestinationOptions?.brands) ? helpCenterDestinationOptions.brands : [];
 
   return (
     <section className="panel">
@@ -141,6 +147,34 @@ export default function ImportPanel({
           />
         </label>
       </section>
+
+      {helpCenterCount > 0 ? (
+        <section className="flat-section">
+          <h3>Help Center destination</h3>
+          <p className="muted">
+            No Help Center URL is required. The app imports into this Zendesk instance and uses category/section names to resolve the hierarchy.
+          </p>
+          {helpCenterDestinationOptions?.error ? <div className="notice warning">{helpCenterDestinationOptions.error}</div> : null}
+          <label className="field-column">
+            <span>Target brand / Help Center</span>
+            <select
+              value={options.helpCenterTargetBrandId || ""}
+              onChange={(event) => onOptionChange("helpCenterTargetBrandId", event.target.value)}
+              disabled={helpCenterDestinationOptions?.loading || brands.length <= 1}
+            >
+              <option value="">Current instance default Help Center</option>
+              {brands.map((brand) => (
+                <option key={brand.id || brand.name} value={brand.id || ""}>
+                  {brand.name || `Brand ${brand.id}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          {brands.length <= 1 && !helpCenterDestinationOptions?.loading ? (
+            <p className="muted">Only one target Help Center was detected, so the default destination will be used.</p>
+          ) : null}
+        </section>
+      ) : null}
 
       {ticketCount > 0 ? (
         <section className="flat-section ticket-range-card">

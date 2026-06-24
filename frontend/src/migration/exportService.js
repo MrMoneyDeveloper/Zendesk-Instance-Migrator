@@ -1,6 +1,7 @@
 import { createEmptyBundle, finalizeBundle } from "./bundleBuilder";
 import { getEndpoint } from "./endpoints";
 import { MigrationObjectType, MIGRATION_OBJECT_ORDER } from "./objectTypes";
+import { createReferenceMapper, REF_TYPES } from "./referenceMapper";
 import { normalizeTicketForImport, ticketCommentAttachmentMetadata } from "./ticketPayload";
 import { metadataFromSource, sanitizePayload, sanitizeWebhookPayload, hasWebhookSecretRequirement } from "../utils/sanitizePayload";
 
@@ -73,20 +74,39 @@ function preserveTicketFormConditionIds(source, payload) {
   copyConditions(source?.end_user_conditions, payload?.end_user_conditions);
 }
 
+function helpCenterContext(type, source, context) {
+  if (type === MigrationObjectType.HELP_CENTER_SECTIONS) {
+    return {
+      ...context,
+      source_category_id: source?.category_id ?? null,
+    };
+  }
+  if (type === MigrationObjectType.HELP_CENTER_ARTICLES) {
+    return {
+      ...context,
+      source_section_id: source?.section_id ?? null,
+    };
+  }
+  return context;
+}
+
 export function normalizeForBundle(type, source, context = {}) {
+  const normalizedContext = helpCenterContext(type, source, context);
   const metadata = metadataFromSource(source, {
-    object_key: context.objectKey,
-    source_object_key: context.sourceObjectKey || context.objectKey,
-    exported_collection: context.collectionKey,
+    object_key: normalizedContext.objectKey,
+    source_object_key: normalizedContext.sourceObjectKey || normalizedContext.objectKey,
+    exported_collection: normalizedContext.collectionKey,
+    ...(normalizedContext.source_category_id !== undefined ? { source_category_id: normalizedContext.source_category_id } : {}),
+    ...(normalizedContext.source_section_id !== undefined ? { source_section_id: normalizedContext.source_section_id } : {}),
   });
 
   const warnings = [];
   if (type === MigrationObjectType.TICKETS) {
     const payload = normalizeTicketForImport(source, {
-      comments: context.comments || [],
-      sourceSubdomain: context.sourceSubdomain || "",
+      comments: normalizedContext.comments || [],
+      sourceSubdomain: normalizedContext.sourceSubdomain || "",
     });
-    const commentAttachments = (context.comments || []).reduce((count, comment) => count + (Array.isArray(comment?.attachments) ? comment.attachments.length : 0), 0);
+    const commentAttachments = (normalizedContext.comments || []).reduce((count, comment) => count + (Array.isArray(comment?.attachments) ? comment.attachments.length : 0), 0);
     if (commentAttachments > 0) {
       warnings.push("Ticket comment attachments were not embedded because Zendesk ticket imports require fresh upload tokens.");
     }
@@ -97,6 +117,7 @@ export function normalizeForBundle(type, source, context = {}) {
       payload,
       metadata: {
         ...metadata,
+        ticket_channel: source?.via?.channel || source?.channel || "",
         comment_count: Array.isArray(payload.comments) ? payload.comments.length : 0,
         attachment_count: commentAttachments,
       },
@@ -114,8 +135,8 @@ export function normalizeForBundle(type, source, context = {}) {
     preserveTicketFormConditionIds(source, payload);
   }
 
-  if (context.objectKey && !payload.object_key) {
-    payload.object_key = context.objectKey;
+  if (normalizedContext.objectKey && !payload.object_key) {
+    payload.object_key = normalizedContext.objectKey;
   }
 
   if (type === MigrationObjectType.WEBHOOKS) {
@@ -202,6 +223,11 @@ function appendSkipped(bundle, skipped) {
   bundle.metadata.skipped.push(skipped);
 }
 
+function appendWarning(bundle, warning) {
+  if (!warning) return;
+  bundle.metadata.warnings.push(warning);
+}
+
 async function safeReadWrapped(api, type, path, wrapperKey, log, cache = null) {
   try {
     log?.(`Reading ${type} from ${path}`);
@@ -222,6 +248,92 @@ async function safeReadWrapped(api, type, path, wrapperKey, log, cache = null) {
         status: error?.status || null,
       },
     };
+  }
+}
+
+const GROUP_DEPENDENCY_TYPES = [
+  MigrationObjectType.MACROS,
+  MigrationObjectType.VIEWS,
+  MigrationObjectType.TICKET_TRIGGERS,
+  MigrationObjectType.AUTOMATIONS,
+  MigrationObjectType.CUSTOM_OBJECT_TRIGGERS,
+  MigrationObjectType.OMNICHANNEL_QUEUES,
+  MigrationObjectType.ROUTING_SETTINGS,
+];
+
+function sourceIdKey(value) {
+  return String(value ?? "").trim();
+}
+
+function existingSourceIds(items = []) {
+  return new Set(
+    items
+      .map((item) => sourceIdKey(item?.metadata?.source_id))
+      .filter(Boolean),
+  );
+}
+
+function collectReferencedGroupIds(bundle) {
+  const mapper = createReferenceMapper();
+  const ids = new Set();
+
+  for (const type of GROUP_DEPENDENCY_TYPES) {
+    for (const item of bundle.objects?.[type] || []) {
+      for (const ref of mapper.collectReferences(item.payload || {})) {
+        if (ref.type === REF_TYPES.GROUP) {
+          const value = sourceIdKey(ref.value);
+          if (value) ids.add(value);
+        }
+      }
+    }
+  }
+
+  return ids;
+}
+
+async function includeReferencedGroups({ api, bundle, options, log, cache }) {
+  const referencedGroupIds = collectReferencedGroupIds(bundle);
+  if (referencedGroupIds.size === 0) return;
+
+  const presentGroupIds = existingSourceIds(bundle.objects[MigrationObjectType.GROUPS]);
+  const missingGroupIds = [...referencedGroupIds].filter((id) => !presentGroupIds.has(id));
+  if (missingGroupIds.length === 0) return;
+
+  log?.(`Reading ${missingGroupIds.length} group dependencies required by exported rules.`);
+
+  for (const groupId of missingGroupIds) {
+    const path = `/api/v2/groups/${encodeURIComponent(groupId)}.json`;
+    const result = await safeReadWrapped(api, MigrationObjectType.GROUPS, path, "group", log, cache);
+    if (!result.ok || !result.item) {
+      appendWarning(
+        bundle,
+        `Group dependency ${groupId} was referenced by an exported rule but could not be read from the source instance. Dependent items may be blocked during import.`,
+      );
+      appendSkipped(bundle, {
+        object_type: MigrationObjectType.GROUPS,
+        display_name: groupId,
+        reason: "missing_required_group_dependency",
+      });
+      continue;
+    }
+
+    if (!options.includeInactive && isInactive(result.item)) {
+      appendWarning(
+        bundle,
+        `Inactive group dependency "${displayValue(result.item)}" was included because an exported rule references it.`,
+      );
+    }
+
+    const normalized = normalizeForBundle(MigrationObjectType.GROUPS, result.item, {
+      collectionKey: getEndpoint(MigrationObjectType.GROUPS).collectionKey,
+    });
+    normalized.metadata.required_dependency = true;
+    normalized.warnings = [
+      ...(normalized.warnings || []),
+      "Included automatically because another exported item references this group.",
+    ];
+    bundle.objects[MigrationObjectType.GROUPS].push(normalized);
+    presentGroupIds.add(sourceIdKey(normalized.metadata.source_id));
   }
 }
 
@@ -426,17 +538,29 @@ function ticketFilterMetadata(filter) {
   };
 }
 
-function uniqueCleanList(values) {
-  return [...new Set((Array.isArray(values) ? values : []).map((value) => String(value || "").trim().toLowerCase()).filter(Boolean))];
+function uniqueCleanList(values, { lower = true } = {}) {
+  return [
+    ...new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean)
+        .map((value) => (lower ? value.toLowerCase() : value)),
+    ),
+  ];
 }
 
 function normalizeCustomFieldFilters(filters) {
   return (Array.isArray(filters) ? filters : [])
     .map((filter) => ({
       field: String(filter?.field || "").trim(),
-      value: String(filter?.value || "").trim(),
+      value: Array.isArray(filter?.value)
+        ? uniqueCleanList(filter.value, { lower: false })
+        : String(filter?.value ?? "").trim(),
+      title: String(filter?.title || "").trim(),
+      key: String(filter?.key || "").trim(),
+      type: String(filter?.type || "").trim(),
     }))
-    .filter((filter) => filter.field && filter.value);
+    .filter((filter) => filter.field && (Array.isArray(filter.value) ? filter.value.length > 0 : String(filter.value).trim()));
 }
 
 function normalizeTicketFieldFilters(options = {}) {
@@ -447,6 +571,13 @@ function normalizeTicketFieldFilters(options = {}) {
     statuses: uniqueCleanList(filters.statuses),
     types: uniqueCleanList(filters.types),
     priorities: uniqueCleanList(filters.priorities),
+    brandIds: uniqueCleanList(filters.brandIds, { lower: false }),
+    groupIds: uniqueCleanList(filters.groupIds, { lower: false }),
+    assigneeIds: uniqueCleanList(filters.assigneeIds, { lower: false }),
+    requesterIds: uniqueCleanList(filters.requesterIds, { lower: false }),
+    organizationIds: uniqueCleanList(filters.organizationIds, { lower: false }),
+    ticketFormIds: uniqueCleanList(filters.ticketFormIds, { lower: false }),
+    tags: uniqueCleanList(filters.tags),
     commentMode: ["public", "internal", "both"].includes(commentMode) ? commentMode : "all",
     customFieldFilters: normalizeCustomFieldFilters(filters.customFieldFilters),
   };
@@ -471,6 +602,17 @@ function matchesSelected(values, actual) {
   return values.includes(String(actual || "").trim().toLowerCase());
 }
 
+function matchesSelectedId(values, actual) {
+  if (!values.length) return true;
+  return values.includes(String(actual ?? "").trim());
+}
+
+function ticketMatchesTags(ticket, selectedTags) {
+  if (!selectedTags.length) return true;
+  const ticketTags = new Set((Array.isArray(ticket?.tags) ? ticket.tags : []).map((tag) => String(tag || "").trim().toLowerCase()).filter(Boolean));
+  return selectedTags.every((tag) => ticketTags.has(tag));
+}
+
 function customFieldValue(ticket, fieldKey) {
   const fields = Array.isArray(ticket?.custom_fields) ? ticket.custom_fields : [];
   const wanted = String(fieldKey || "").trim();
@@ -480,6 +622,9 @@ function customFieldValue(ticket, fieldKey) {
 }
 
 function valuesMatch(actual, expected) {
+  if (Array.isArray(expected)) {
+    return expected.every((value) => valuesMatch(actual, value));
+  }
   if (Array.isArray(actual)) {
     return actual.some((value) => valuesMatch(value, expected));
   }
@@ -495,6 +640,13 @@ function isTicketInsideFieldFilters(ticket, filters) {
   if (!matchesSelected(filters.statuses, ticket?.status)) return false;
   if (!matchesSelected(filters.types, ticket?.type)) return false;
   if (!matchesSelected(filters.priorities, ticket?.priority)) return false;
+  if (!matchesSelectedId(filters.brandIds, ticket?.brand_id)) return false;
+  if (!matchesSelectedId(filters.groupIds, ticket?.group_id)) return false;
+  if (!matchesSelectedId(filters.assigneeIds, ticket?.assignee_id)) return false;
+  if (!matchesSelectedId(filters.requesterIds, ticket?.requester_id)) return false;
+  if (!matchesSelectedId(filters.organizationIds, ticket?.organization_id)) return false;
+  if (!matchesSelectedId(filters.ticketFormIds, ticket?.ticket_form_id)) return false;
+  if (!ticketMatchesTags(ticket, filters.tags)) return false;
   if (!ticketMatchesCustomFieldFilters(ticket, filters.customFieldFilters)) return false;
   return true;
 }
@@ -515,9 +667,43 @@ function fieldFilterMetadata(filters) {
     statuses: filters.statuses,
     types: filters.types,
     priorities: filters.priorities,
+    brand_ids: filters.brandIds,
+    group_ids: filters.groupIds,
+    assignee_ids: filters.assigneeIds,
+    requester_ids: filters.requesterIds,
+    organization_ids: filters.organizationIds,
+    ticket_form_ids: filters.ticketFormIds,
+    tags: filters.tags,
     comment_mode: filters.commentMode,
-    custom_field_filters: filters.customFieldFilters,
+    custom_field_filters: filters.customFieldFilters.map((filter) => {
+      const metadata = {
+        field: filter.field,
+        value: filter.value,
+      };
+      if (filter.title) metadata.title = filter.title;
+      if (filter.key) metadata.key = filter.key;
+      if (filter.type) metadata.type = filter.type;
+      return metadata;
+    }),
   };
+}
+
+function hasSelectedTicketFilters(filters) {
+  return Boolean(
+    filters.channels.length ||
+      filters.statuses.length ||
+      filters.types.length ||
+      filters.priorities.length ||
+      filters.brandIds.length ||
+      filters.groupIds.length ||
+      filters.assigneeIds.length ||
+      filters.requesterIds.length ||
+      filters.organizationIds.length ||
+      filters.ticketFormIds.length ||
+      filters.tags.length ||
+      filters.customFieldFilters.length ||
+      filters.commentMode !== "all",
+  );
 }
 
 async function exportTickets({ api, bundle, options, log, cache, sourceSubdomain }) {
@@ -535,14 +721,7 @@ async function exportTickets({ api, bundle, options, log, cache, sourceSubdomain
   } else {
     log?.("Exporting all tickets.");
   }
-  if (
-    fieldFilters.channels.length ||
-    fieldFilters.statuses.length ||
-    fieldFilters.types.length ||
-    fieldFilters.priorities.length ||
-    fieldFilters.customFieldFilters.length ||
-    fieldFilters.commentMode !== "all"
-  ) {
+  if (hasSelectedTicketFilters(fieldFilters)) {
     log?.("Applying selected ticket filters before adding tickets to the bundle.");
   }
 
@@ -659,6 +838,8 @@ export async function exportConfiguration({ api, startupState, scope, options = 
 
     await exportSimpleType({ api, bundle, type, options: { includeInactive }, log, cache: exportCache });
   }
+
+  await includeReferencedGroups({ api, bundle, options: { includeInactive }, log, cache: exportCache });
 
   const finalized = finalizeBundle(bundle);
   log("Export complete. Treat this bundle as confidential because it contains business rules and internal configuration.");

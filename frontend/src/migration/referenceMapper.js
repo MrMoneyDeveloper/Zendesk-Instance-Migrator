@@ -8,6 +8,8 @@ const REF_TYPES = Object.freeze({
   CUSTOM_OBJECT: "custom_object",
   CUSTOM_OBJECT_FIELD: "custom_object_field",
   QUEUE: "queue",
+  HELP_CENTER_CATEGORY: "help_center_category",
+  HELP_CENTER_SECTION: "help_center_section",
 });
 const ZENDESK_SPECIAL_VALUES = new Set(["", "current_user", "current_groups", "requester", "requester_id", "requester_and_ccs", "assignee_id"]);
 function isSpecialZendeskValue(value) {
@@ -36,6 +38,8 @@ function targetIdFor(type, target) {
   if (type === MigrationObjectType.CUSTOM_OBJECTS) return target.key;
   if (type === MigrationObjectType.CUSTOM_OBJECT_FIELDS || type === MigrationObjectType.CUSTOM_OBJECT_RELATIONSHIPS) return target.key;
   if (type === MigrationObjectType.OMNICHANNEL_QUEUES) return target.id || target.name;
+  if (type === MigrationObjectType.HELP_CENTER_CATEGORIES) return target.id;
+  if (type === MigrationObjectType.HELP_CENTER_SECTIONS) return target.id;
   return target.id;
 }
 
@@ -56,6 +60,10 @@ function mapTypeForObjectType(type) {
       return REF_TYPES.CUSTOM_OBJECT_FIELD;
     case MigrationObjectType.OMNICHANNEL_QUEUES:
       return REF_TYPES.QUEUE;
+    case MigrationObjectType.HELP_CENTER_CATEGORIES:
+      return REF_TYPES.HELP_CENTER_CATEGORY;
+    case MigrationObjectType.HELP_CENTER_SECTIONS:
+      return REF_TYPES.HELP_CENTER_SECTION;
     default:
       return null;
   }
@@ -82,6 +90,8 @@ function collectKnownSourceIds(bundle) {
     [REF_TYPES.CUSTOM_OBJECT]: new Set(),
     [REF_TYPES.CUSTOM_OBJECT_FIELD]: new Set(),
     [REF_TYPES.QUEUE]: new Set(),
+    [REF_TYPES.HELP_CENTER_CATEGORY]: new Set(),
+    [REF_TYPES.HELP_CENTER_SECTION]: new Set(),
   };
 
   for (const [objectType, items] of Object.entries(bundle?.objects || {})) {
@@ -92,6 +102,8 @@ function collectKnownSourceIds(bundle) {
       const sourceId = sourceIdFor(item);
       if (sourceId !== undefined && sourceId !== null) known[refType].add(key(sourceId));
       if (objectType === MigrationObjectType.CUSTOM_OBJECTS && item?.payload?.key) known[refType].add(key(item.payload.key));
+      if (objectType === MigrationObjectType.HELP_CENTER_CATEGORIES && item?.payload?.name) known[refType].add(key(item.payload.name));
+      if (objectType === MigrationObjectType.HELP_CENTER_SECTIONS && item?.payload?.name) known[refType].add(key(item.payload.name));
       if (
         (objectType === MigrationObjectType.CUSTOM_OBJECT_FIELDS ||
           objectType === MigrationObjectType.CUSTOM_OBJECT_RELATIONSHIPS) &&
@@ -115,6 +127,8 @@ export class ReferenceMapper {
       [REF_TYPES.CUSTOM_OBJECT]: new Map(),
       [REF_TYPES.CUSTOM_OBJECT_FIELD]: new Map(),
       [REF_TYPES.QUEUE]: new Map(),
+      [REF_TYPES.HELP_CENTER_CATEGORY]: new Map(),
+      [REF_TYPES.HELP_CENTER_SECTION]: new Map(),
     };
     this.knownSourceIds = bundle ? collectKnownSourceIds(bundle) : null;
   }
@@ -145,6 +159,14 @@ export class ReferenceMapper {
 
     if (objectType === MigrationObjectType.OMNICHANNEL_QUEUES) {
       this.register(refType, sourceItem?.payload?.name, targetItem?.id || targetItem?.name);
+    }
+
+    if (objectType === MigrationObjectType.HELP_CENTER_CATEGORIES) {
+      this.register(refType, sourceItem?.payload?.name, targetItem?.id);
+    }
+
+    if (objectType === MigrationObjectType.HELP_CENTER_SECTIONS) {
+      this.register(refType, sourceItem?.payload?.name, targetItem?.id);
     }
   }
 
@@ -181,6 +203,8 @@ export class ReferenceMapper {
       for (const value of asArray(node.ticket_form_id)) refs.push({ type: REF_TYPES.TICKET_FORM, value, label: "ticket_form_id" });
       for (const value of asArray(node.webhook_id)) refs.push({ type: REF_TYPES.WEBHOOK, value, label: "webhook_id" });
       for (const value of asArray(node.queue_id)) refs.push({ type: REF_TYPES.QUEUE, value, label: "queue_id" });
+      for (const value of asArray(node.category_id)) refs.push({ type: REF_TYPES.HELP_CENTER_CATEGORY, value, label: "category_id" });
+      for (const value of asArray(node.section_id)) refs.push({ type: REF_TYPES.HELP_CENTER_SECTION, value, label: "section_id" });
 
       const field = String(node.field || "");
       const value = node.value;
@@ -253,6 +277,8 @@ export class ReferenceMapper {
       if (node.ticket_form_id !== undefined) node.ticket_form_id = rewriteScalar(REF_TYPES.TICKET_FORM, node.ticket_form_id, "ticket_form_id");
       if (node.webhook_id !== undefined) node.webhook_id = rewriteScalar(REF_TYPES.WEBHOOK, node.webhook_id, "webhook_id");
       if (node.queue_id !== undefined) node.queue_id = rewriteScalar(REF_TYPES.QUEUE, node.queue_id, "queue_id");
+      if (node.category_id !== undefined) node.category_id = rewriteScalar(REF_TYPES.HELP_CENTER_CATEGORY, node.category_id, "category_id");
+      if (node.section_id !== undefined) node.section_id = rewriteScalar(REF_TYPES.HELP_CENTER_SECTION, node.section_id, "section_id");
 
       if (node.field !== undefined) {
         let field = String(node.field);

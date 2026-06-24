@@ -11,12 +11,18 @@ describe("dependency order", () => {
         MigrationObjectType.TICKET_FORMS,
         MigrationObjectType.TICKET_FIELDS,
         MigrationObjectType.CUSTOM_OBJECTS,
+        MigrationObjectType.HELP_CENTER_ARTICLES,
+        MigrationObjectType.HELP_CENTER_CATEGORIES,
+        MigrationObjectType.HELP_CENTER_SECTIONS,
       ]),
     ).toEqual([
       MigrationObjectType.CUSTOM_OBJECTS,
       MigrationObjectType.TICKET_FIELDS,
       MigrationObjectType.TICKET_FORMS,
       MigrationObjectType.AUTOMATIONS,
+      MigrationObjectType.HELP_CENTER_CATEGORIES,
+      MigrationObjectType.HELP_CENTER_SECTIONS,
+      MigrationObjectType.HELP_CENTER_ARTICLES,
     ]);
   });
 
